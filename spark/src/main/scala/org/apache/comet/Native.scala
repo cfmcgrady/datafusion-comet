@@ -202,4 +202,102 @@ class Native extends NativeBase {
    */
   @native def logMemoryUsage(name: String, memoryUsageBytes: Long): Unit
 
+  // ============================================================================
+  // Celeborn Shuffle Integration
+  // ============================================================================
+
+  /**
+   * Create a Celeborn shuffle client for pushing data to Celeborn workers.
+   *
+   * @param appId
+   *   The application ID
+   * @param masterEndpoints
+   *   Array of Celeborn master endpoints (e.g., ["host1:9097", "host2:9097"])
+   * @param lifecycleManagerHost
+   *   The host of the LifecycleManager running on the Driver
+   * @param lifecycleManagerPort
+   *   The port of the LifecycleManager
+   * @param shuffleId
+   *   The shuffle ID
+   * @param mapId
+   *   The map task ID
+   * @param attemptId
+   *   The task attempt ID
+   * @param numMappers
+   *   Total number of mappers
+   * @param numPartitions
+   *   Total number of partitions
+   * @return
+   *   A handle to the native Celeborn client context
+   */
+  @native def createCelebornClient(
+      appId: String,
+      masterEndpoints: Array[String],
+      lifecycleManagerHost: String,
+      lifecycleManagerPort: Int,
+      shuffleId: Int,
+      mapId: Int,
+      attemptId: Int,
+      numMappers: Int,
+      numPartitions: Int): Long
+
+  /**
+   * Push data to Celeborn for a specific partition.
+   *
+   * @param contextHandle
+   *   The handle to the native Celeborn client context
+   * @param partitionId
+   *   The target partition ID
+   * @param data
+   *   The data to push (serialized Arrow IPC format)
+   * @return
+   *   true if successful, false otherwise
+   */
+  @native def celebornPushData(contextHandle: Long, partitionId: Int, data: Array[Byte]): Boolean
+
+  /**
+   * Signal that a mapper has finished writing all its data.
+   *
+   * @param contextHandle
+   *   The handle to the native Celeborn client context
+   * @return
+   *   true if the stage has ended (all mappers finished), false otherwise
+   */
+  @native def celebornMapperEnd(contextHandle: Long): Boolean
+
+  /**
+   * Release the Celeborn client context and clean up resources.
+   *
+   * @param contextHandle
+   *   The handle to the native Celeborn client context
+   */
+  @native def releaseCelebornClient(contextHandle: Long): Unit
+
+  /**
+   * Cleanup shuffle data from Celeborn.
+   *
+   * @param contextHandle
+   *   The handle to the native Celeborn client context
+   * @return
+   *   true if successful, false otherwise
+   */
+  @native def celebornCleanupShuffle(contextHandle: Long): Boolean
+
+  /**
+   * Get partition locations from Celeborn.
+   *
+   * @param contextHandle
+   *   The handle to the native Celeborn client context
+   * @param partitionId
+   *   The partition ID to get locations for
+   * @return
+   *   Array of worker addresses for the partition
+   */
+  @native def celebornGetPartitionLocation(contextHandle: Long, partitionId: Int): Array[String]
+
+  /**
+   * Clear all cached Celeborn clients.
+   */
+  @native def celebornClearClients(): Unit
+
 }

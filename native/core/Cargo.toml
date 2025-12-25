@@ -81,6 +81,8 @@ opendal = { version ="0.55.0", optional = true, features = ["services-hdfs"] }
 iceberg = { workspace = true }
 serde_json = "1.0"
 uuid = "1.18.1"
+celeborn-client = { workspace = true, optional = true }
+dashmap = "6.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.18.0"
@@ -103,10 +105,11 @@ default = []
 hdfs = ["datafusion-comet-objectstore-hdfs"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
+celeborn = ["celeborn-client"]
 
 # exclude optional packages from cargo machete verifications
 [package.metadata.cargo-machete]
-ignored = ["datafusion-comet-objectstore-hdfs", "hdfs-sys"]
+ignored = ["datafusion-comet-objectstore-hdfs", "hdfs-sys", "celeborn-client"]
 
 [lib]
 name = "comet"

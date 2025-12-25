@@ -22,6 +22,18 @@ mod map;
 pub mod row;
 mod shuffle_writer;
 
+#[cfg(feature = "celeborn")]
+pub mod celeborn_writer;
+#[cfg(feature = "celeborn")]
+pub mod celeborn_reader;
+#[cfg(feature = "celeborn")]
+pub mod celeborn_jni;
+
 pub use codec::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter};
 pub use comet_partitioning::CometPartitioning;
 pub use shuffle_writer::ShuffleWriterExec;
+
+#[cfg(feature = "celeborn")]
+pub use celeborn_writer::{CelebornShuffleConfig, CelebornShuffleWriterExec};
+#[cfg(feature = "celeborn")]
+pub use celeborn_reader::{CelebornClientManager, CelebornShuffleReaderConfig, CelebornShuffleReaderExec};

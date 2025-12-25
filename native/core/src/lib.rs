@@ -127,6 +127,7 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
             "jemalloc" => cfg!(feature = "jemalloc"),
             "hdfs" => cfg!(feature = "hdfs"),
             "hdfs-opendal" => cfg!(feature = "hdfs-opendal"),
+            "celeborn" => cfg!(feature = "celeborn"),
             _ => false, // Unknown features return false
         };
 

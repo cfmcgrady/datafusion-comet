@@ -815,6 +815,87 @@ object CometConf extends ShimCometConf {
   def getBooleanConf(name: String, defaultValue: Boolean, conf: SQLConf): Boolean = {
     conf.getConfString(name, defaultValue.toString).toLowerCase(Locale.ROOT) == "true"
   }
+
+  // ============================================================================
+  // Celeborn Shuffle Integration Configurations
+  // ============================================================================
+
+  val COMET_SHUFFLE_CELEBORN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.celeborn.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc("Whether to enable Celeborn shuffle for Comet. When enabled, Comet will use " +
+        "Apache Celeborn for distributed shuffle operations instead of writing to local disk. " +
+        "This requires a running Celeborn cluster and proper configuration of master endpoints " +
+        "and LifecycleManager address.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_SHUFFLE_CELEBORN_MASTER_ENDPOINTS: ConfigEntry[String] =
+    conf("spark.comet.shuffle.celeborn.master.endpoints")
+      .category(CATEGORY_SHUFFLE)
+      .doc("Comma-separated list of Celeborn master endpoints (e.g., 'host1:9097,host2:9097'). " +
+        "Required when Celeborn shuffle is enabled.")
+      .stringConf
+      .createWithDefault("")
+
+  val COMET_SHUFFLE_CELEBORN_LIFECYCLE_MANAGER_HOST: ConfigEntry[String] =
+    conf("spark.comet.shuffle.celeborn.lifecycleManager.host")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "The host address of the LifecycleManager running on the Spark Driver. " +
+          "This is typically set automatically by the Celeborn Spark plugin. " +
+          "Required when Celeborn shuffle is enabled.")
+      .stringConf
+      .createWithDefault("")
+
+  val COMET_SHUFFLE_CELEBORN_LIFECYCLE_MANAGER_PORT: ConfigEntry[Int] =
+    conf("spark.comet.shuffle.celeborn.lifecycleManager.port")
+      .category(CATEGORY_SHUFFLE)
+      .doc("The port of the LifecycleManager running on the Spark Driver. " +
+        "Default is 9098.")
+      .intConf
+      .createWithDefault(9098)
+
+  val COMET_SHUFFLE_CELEBORN_PUSH_BUFFER_SIZE: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.celeborn.push.bufferSize")
+      .category(CATEGORY_SHUFFLE)
+      .doc("The buffer size for pushing data to Celeborn workers. " +
+        "Larger buffer sizes can improve throughput but use more memory.")
+      .bytesConf(ByteUnit.BYTE)
+      .createWithDefault(4 * 1024 * 1024) // 4MB
+
+  val COMET_SHUFFLE_CELEBORN_PUSH_MAX_REQS_IN_FLIGHT: ConfigEntry[Int] =
+    conf("spark.comet.shuffle.celeborn.push.maxReqsInFlight")
+      .category(CATEGORY_SHUFFLE)
+      .doc("Maximum number of concurrent push requests to Celeborn workers.")
+      .intConf
+      .createWithDefault(32)
+
+  val COMET_SHUFFLE_CELEBORN_FETCH_MAX_REQS_IN_FLIGHT: ConfigEntry[Int] =
+    conf("spark.comet.shuffle.celeborn.fetch.maxReqsInFlight")
+      .category(CATEGORY_SHUFFLE)
+      .doc("Maximum number of concurrent fetch requests from Celeborn workers.")
+      .intConf
+      .createWithDefault(3)
+
+  val COMET_SHUFFLE_CELEBORN_COMPRESSION_CODEC: ConfigEntry[String] =
+    conf("spark.comet.shuffle.celeborn.compression.codec")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Compression codec for Celeborn shuffle data. " +
+          "Supported values: 'lz4', 'zstd', 'none'. " +
+          "LZ4 offers faster compression/decompression, " +
+          "while ZSTD provides better compression ratio.")
+      .stringConf
+      .checkValues(Set("lz4", "zstd", "none"))
+      .createWithDefault("lz4")
+
+  val COMET_SHUFFLE_CELEBORN_RPC_TIMEOUT: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.celeborn.rpc.timeout")
+      .category(CATEGORY_SHUFFLE)
+      .doc("RPC timeout in milliseconds for Celeborn operations.")
+      .longConf
+      .createWithDefault(30000L)
 }
 
 object ConfigHelpers {

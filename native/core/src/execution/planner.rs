@@ -33,6 +33,8 @@ use crate::{
         shuffle::ShuffleWriterExec,
     },
 };
+#[cfg(feature = "celeborn")]
+use crate::execution::shuffle::{CelebornShuffleConfig, CelebornShuffleWriterExec};
 use arrow::compute::CastOptions;
 use arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
@@ -1222,6 +1224,58 @@ impl PhysicalPlanner {
                     writer.output_index_file.clone(),
                     writer.tracing_enabled,
                     write_buffer_size,
+                )?);
+
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        shuffle_writer,
+                        vec![Arc::clone(&child)],
+                    )),
+                ))
+            }
+            #[cfg(feature = "celeborn")]
+            OpStruct::CelebornShuffleWriter(writer) => {
+                assert_eq!(children.len(), 1);
+                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+
+                let partitioning = self.create_partitioning(
+                    writer.partitioning.as_ref().unwrap(),
+                    child.native_plan.schema(),
+                )?;
+
+                let codec = match writer.codec.try_into() {
+                    Ok(SparkCompressionCodec::None) => Ok(CompressionCodec::None),
+                    Ok(SparkCompressionCodec::Snappy) => Ok(CompressionCodec::Snappy),
+                    Ok(SparkCompressionCodec::Zstd) => {
+                        Ok(CompressionCodec::Zstd(writer.compression_level))
+                    }
+                    Ok(SparkCompressionCodec::Lz4) => Ok(CompressionCodec::Lz4Frame),
+                    _ => Err(GeneralError(format!(
+                        "Unsupported shuffle compression codec: {:?}",
+                        writer.codec
+                    ))),
+                }?;
+
+                let celeborn_config = CelebornShuffleConfig {
+                    master_endpoints: writer.master_endpoints.clone(),
+                    app_id: writer.app_id.clone(),
+                    shuffle_id: writer.shuffle_id,
+                    map_id: writer.map_id,
+                    attempt_id: writer.attempt_id,
+                    num_mappers: writer.num_mappers,
+                    num_partitions: writer.num_partitions,
+                    lifecycle_manager_host: writer.lifecycle_manager_host.clone(),
+                    lifecycle_manager_port: writer.lifecycle_manager_port,
+                };
+
+                let shuffle_writer = Arc::new(CelebornShuffleWriterExec::try_new(
+                    Arc::clone(&child.native_plan),
+                    partitioning,
+                    codec,
+                    celeborn_config,
+                    writer.tracing_enabled,
                 )?);
 
                 Ok((

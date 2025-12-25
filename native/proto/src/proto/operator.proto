@@ -51,6 +51,7 @@ message Operator {
     IcebergScan iceberg_scan = 112;
     ParquetWriter parquet_writer = 113;
     Explode explode = 114;
+    CelebornShuffleWriter celeborn_shuffle_writer = 115;
   }
 }
 
@@ -232,6 +233,36 @@ message ShuffleWriter {
   // Size of the write buffer in bytes used when writing shuffle data to disk.
   // Larger values may improve write performance but use more memory.
   int32 write_buffer_size = 8;
+}
+
+// Celeborn shuffle writer for distributed shuffle via Apache Celeborn
+message CelebornShuffleWriter {
+  // Partitioning scheme
+  spark.spark_partitioning.Partitioning partitioning = 1;
+  // Compression codec
+  CompressionCodec codec = 2;
+  // Compression level (for codecs that support it)
+  int32 compression_level = 3;
+  // Whether tracing is enabled
+  bool tracing_enabled = 4;
+  // Celeborn master endpoints (comma-separated)
+  repeated string master_endpoints = 5;
+  // Application ID
+  string app_id = 6;
+  // Shuffle ID
+  int32 shuffle_id = 7;
+  // Map ID (task partition)
+  int32 map_id = 8;
+  // Attempt ID
+  int32 attempt_id = 9;
+  // Number of mappers
+  int32 num_mappers = 10;
+  // Number of partitions
+  int32 num_partitions = 11;
+  // LifecycleManager host (Driver host)
+  string lifecycle_manager_host = 12;
+  // LifecycleManager port
+  int32 lifecycle_manager_port = 13;
 }
 
 message ParquetWriter {

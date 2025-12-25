@@ -55,6 +55,8 @@ pub enum OperatorType {
     Limit,
     Sort,
     ShuffleWriter,
+    #[cfg(feature = "celeborn")]
+    CelebornShuffleWriter,
     ParquetWriter,
     Expand,
     SortMergeJoin,
@@ -145,6 +147,10 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::NativeScan(_) => Some(OperatorType::NativeScan),
         OpStruct::IcebergScan(_) => Some(OperatorType::IcebergScan),
         OpStruct::ShuffleWriter(_) => Some(OperatorType::ShuffleWriter),
+        #[cfg(feature = "celeborn")]
+        OpStruct::CelebornShuffleWriter(_) => Some(OperatorType::CelebornShuffleWriter),
+        #[cfg(not(feature = "celeborn"))]
+        OpStruct::CelebornShuffleWriter(_) => None, // Celeborn feature not enabled
         OpStruct::ParquetWriter(_) => Some(OperatorType::ParquetWriter),
         OpStruct::Expand(_) => Some(OperatorType::Expand),
         OpStruct::SortMergeJoin(_) => Some(OperatorType::SortMergeJoin),
