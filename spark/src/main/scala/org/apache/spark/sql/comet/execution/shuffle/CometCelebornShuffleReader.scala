@@ -20,7 +20,7 @@
 package org.apache.spark.sql.comet.execution.shuffle
 
 import org.apache.celeborn.client.ShuffleClient
-import org.apache.celeborn.client.read.CelebornInputStream
+import org.apache.celeborn.client.read.{CelebornInputStream, MetricsCallback}
 import org.apache.celeborn.common.CelebornConf
 import org.apache.spark.TaskContext
 import org.apache.spark.internal.Logging
@@ -114,17 +114,23 @@ class CometCelebornShuffleReader[K, C](
     try {
       // Read partition data from Celeborn using the Java client
       // The ShuffleClient handles the communication with Celeborn workers
-      // Method signature: readPartition(shuffleId, appShuffleId, partitionId,
-      //   attemptNumber: Long, startMapIndex, endMapIndex, metricsCallback)
+      // Method signature: readPartition(shuffleId, partitionId, attemptNumber,
+      //   startMapIndex, endMapIndex, metricsCallback)
+      val metricsCallback = new MetricsCallback {
+        override def incBytesRead(bytesRead: Long): Unit = {
+          metrics.incRemoteBytesRead(bytesRead)
+        }
+        override def incReadTime(time: Long): Unit = {
+          metrics.incFetchWaitTime(time)
+        }
+      }
       val inputStream = shuffleClient.readPartition(
         shuffleId,
-        shuffleId, // appShuffleId - same as shuffleId for Spark
         partitionId,
-        context.attemptNumber().toLong,
+        context.attemptNumber().toInt,
         startMapIndex,
         endMapIndex,
-        null // MetricsCallback
-      )
+        metricsCallback)
 
       if (inputStream == null) {
         logDebug(s"No data for shuffle $shuffleId partition $partitionId")
