@@ -19,13 +19,16 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
-import java.io.IOException
+import java.io.{ByteArrayOutputStream, IOException}
+
+import scala.reflect.ClassTag
 
 import org.apache.celeborn.client.ShuffleClient
 import org.apache.celeborn.common.CelebornConf
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
+import org.apache.spark.serializer.SerializerInstance
 import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
 
 import org.apache.comet.Native
@@ -66,6 +69,14 @@ class CometCelebornShuffleWriter[K, V](
   private val shuffleId = handle.shuffleId
   private val numPartitions = handle.numPartitions
   private val numMappers = handle.numMappers
+  private val dep = handle.dependency
+
+  // Serializer from the shuffle dependency - must match what Reader uses
+  private val serializer: SerializerInstance = dep.serializer.newInstance()
+
+  // Buffer for serialization
+  private val serBuffer = new ByteArrayOutputStream()
+  private val serOutputStream = serializer.serializeStream(serBuffer)
 
   // Native instance for JNI calls
   private val native = new Native()
@@ -116,8 +127,8 @@ class CometCelebornShuffleWriter[K, V](
     var bytesWritten = 0L
 
     try {
-      // For Comet, we expect records to be in a format that can be serialized natively
-      // The actual serialization happens in the native Rust code
+      // Use Spark's serializer to serialize key-value pairs
+      // This ensures compatibility with the Reader which uses the same serializer
 
       while (records.hasNext) {
         val record = records.next()
@@ -125,16 +136,23 @@ class CometCelebornShuffleWriter[K, V](
         val value = record._2
 
         // Determine partition for this record
-        val partition = handle.dependency.partitioner.getPartition(key)
+        val partition = dep.partitioner.getPartition(key)
 
-        // Serialize and push data via native code
-        // The native code handles batching and pushing to Celeborn workers
-        val valueBytes = serializeValue(value)
-        val success = native.celebornPushData(nativeClientHandle, partition, valueBytes)
+        // Serialize key-value pair using Spark's serializer
+        // Use ClassTag[Any] as the type tag for serialization
+        serBuffer.reset()
+        serOutputStream.writeKey(key)(ClassTag.Any.asInstanceOf[ClassTag[K]])
+        serOutputStream.writeValue(value)(ClassTag.Any.asInstanceOf[ClassTag[V]])
+        serOutputStream.flush()
+
+        val serializedBytes = serBuffer.toByteArray
+
+        // Push serialized data to Celeborn via native code
+        val success = native.celebornPushData(nativeClientHandle, partition, serializedBytes)
 
         if (success) {
-          bytesWritten += valueBytes.length
-          partitionLengths(partition) += valueBytes.length
+          bytesWritten += serializedBytes.length
+          partitionLengths(partition) += serializedBytes.length
         }
 
         recordsWritten += 1
@@ -155,22 +173,6 @@ class CometCelebornShuffleWriter[K, V](
     }
   }
 
-  /**
-   * Serialize a value to bytes. For Comet, this typically handles Arrow-formatted data.
-   */
-  private def serializeValue(value: V): Array[Byte] = {
-    value match {
-      case bytes: Array[Byte] => bytes
-      case _ =>
-        // Use Java serialization for non-byte array values
-        val stream = new java.io.ByteArrayOutputStream()
-        val oos = new java.io.ObjectOutputStream(stream)
-        oos.writeObject(value)
-        oos.close()
-        stream.toByteArray
-    }
-  }
-
   override def stop(success: Boolean): Option[MapStatus] = {
     if (stopping) {
       return None
@@ -178,6 +180,9 @@ class CometCelebornShuffleWriter[K, V](
     stopping = true
 
     try {
+      // Close serialization stream
+      serOutputStream.close()
+
       if (success) {
         // Commit the map output
         if (nativeClientHandle != 0L) {
