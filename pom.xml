@@ -87,7 +87,7 @@ under the License.
     <testcontainers.version>1.21.0</testcontainers.version>
     <amazon-awssdk-v2.version>2.31.51</amazon-awssdk-v2.version>
     <!-- Apache Celeborn for distributed shuffle -->
-    <celeborn.version>0.6.0</celeborn.version>
+    <celeborn.version>0.4.2.3-SNAPSHOT</celeborn.version>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
