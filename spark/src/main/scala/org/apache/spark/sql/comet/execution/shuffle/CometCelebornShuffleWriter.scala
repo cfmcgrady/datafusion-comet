@@ -147,12 +147,19 @@ class CometCelebornShuffleWriter[K, V](
 
         val serializedBytes = serBuffer.toByteArray
 
+        logDebug(
+          s"Serialized record: key=$key, value=$value, " +
+            s"bytes=${serializedBytes.length}, partition=$partition")
+
         // Push serialized data to Celeborn via native code
         val success = native.celebornPushData(nativeClientHandle, partition, serializedBytes)
 
         if (success) {
           bytesWritten += serializedBytes.length
           partitionLengths(partition) += serializedBytes.length
+          logDebug(s"Successfully pushed data to partition $partition")
+        } else {
+          logWarning(s"Failed to push data to partition $partition")
         }
 
         recordsWritten += 1

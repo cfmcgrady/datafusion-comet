@@ -116,6 +116,10 @@ class CometCelebornShuffleReader[K, C](
       // The ShuffleClient handles the communication with Celeborn workers
       // Method signature: readPartition(shuffleId, partitionId, attemptNumber,
       //   startMapIndex, endMapIndex, metricsCallback)
+      logDebug(
+        s"Creating partition iterator for shuffle $shuffleId partition $partitionId, " +
+          s"maps [$startMapIndex, $endMapIndex)")
+
       val metricsCallback = new MetricsCallback {
         override def incBytesRead(bytesRead: Long): Unit = {
           metrics.incRemoteBytesRead(bytesRead)
@@ -133,9 +137,11 @@ class CometCelebornShuffleReader[K, C](
         metricsCallback)
 
       if (inputStream == null) {
-        logDebug(s"No data for shuffle $shuffleId partition $partitionId")
+        logWarning(s"No data for shuffle $shuffleId partition $partitionId")
         return Iterator.empty
       }
+
+      logDebug(s"Got input stream for shuffle $shuffleId partition $partitionId")
 
       // Create iterator from input stream
       new CelebornPartitionIterator[K, C](
@@ -197,6 +203,10 @@ private class CelebornPartitionIterator[K, C](
 
     // Estimate bytes read (this is approximate)
     // The actual bytes are tracked by CelebornInputStream
+
+    logDebug(
+      s"Read record from shuffle $shuffleId partition $partitionId: " +
+        s"key=${kv._1}, value=${kv._2}")
 
     (kv._1.asInstanceOf[K], kv._2.asInstanceOf[C])
   }
