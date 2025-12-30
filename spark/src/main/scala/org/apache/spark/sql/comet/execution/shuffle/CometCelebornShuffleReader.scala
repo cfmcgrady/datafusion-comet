@@ -141,7 +141,9 @@ class CometCelebornShuffleReader[K, C](
         return Iterator.empty
       }
 
-      logDebug(s"Got input stream for shuffle $shuffleId partition $partitionId")
+      // Check if stream has data
+      val available = inputStream.available()
+      logInfo(s"Got input stream for shuffle $shuffleId partition $partitionId, available bytes: $available")
 
       // Create iterator from input stream
       new CelebornPartitionIterator[K, C](
@@ -200,14 +202,6 @@ private class CelebornPartitionIterator[K, C](
   override def next(): Product2[K, C] = {
     val kv = keyValueIterator.next()
     recordsRead += 1
-
-    // Estimate bytes read (this is approximate)
-    // The actual bytes are tracked by CelebornInputStream
-
-    logDebug(
-      s"Read record from shuffle $shuffleId partition $partitionId: " +
-        s"key=${kv._1}, value=${kv._2}")
-
     (kv._1.asInstanceOf[K], kv._2.asInstanceOf[C])
   }
 }

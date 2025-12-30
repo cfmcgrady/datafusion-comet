@@ -19,11 +19,10 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
-import java.io.{ByteArrayOutputStream, IOException}
+import java.io.ByteArrayOutputStream
 
 import scala.reflect.ClassTag
 
-import org.apache.celeborn.client.ShuffleClient
 import org.apache.celeborn.common.CelebornConf
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
@@ -34,23 +33,22 @@ import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.comet.Native
 
 /**
- * Comet Celeborn Shuffle Writer that uses native Rust implementation for data serialization and
- * pushes data to Celeborn workers.
+ * Comet Celeborn Shuffle Writer that uses Rust ExecutorShuffleClient via JNI.
  *
  * This writer:
- *   - Uses Comet's native Rust code for efficient data serialization (Arrow format)
- *   - Connects to Celeborn LifecycleManager via the ShuffleClient
- *   - Pushes serialized data directly to Celeborn Workers
+ *   - Uses Spark's serializer for data serialization (compatible with Reader)
+ *   - Uses Rust ExecutorShuffleClient via JNI for pushing data to Celeborn Workers
+ *   - Ensures data format compatibility between Writer and Reader
  *
  * Data Flow:
  * {{{
  *   Spark Records
  *       |
  *       v
- *   Native Rust Serialization (Arrow format)
+ *   Spark Serializer (key-value pairs)
  *       |
  *       v
- *   ShuffleClient.pushData()
+ *   Native.celebornPushData() (Rust ExecutorShuffleClient)
  *       |
  *       v
  *   Celeborn Workers
@@ -61,7 +59,6 @@ class CometCelebornShuffleWriter[K, V](
     mapId: Int,
     context: TaskContext,
     celebornConf: CelebornConf,
-    shuffleClient: ShuffleClient,
     metrics: ShuffleWriteMetricsReporter)
     extends ShuffleWriter[K, V]
     with Logging {
@@ -71,17 +68,18 @@ class CometCelebornShuffleWriter[K, V](
   private val numMappers = handle.numMappers
   private val dep = handle.dependency
 
+  // Use context.partitionId() as the actual mapId for Celeborn
+  // This is the partition index within the stage (0-based), not the global task ID
+  // This matches what Celeborn's Java ShuffleWriter does
+  private val celebornMapId = context.partitionId()
+
   // Serializer from the shuffle dependency - must match what Reader uses
   private val serializer: SerializerInstance = dep.serializer.newInstance()
-
-  // Buffer for serialization
-  private val serBuffer = new ByteArrayOutputStream()
-  private val serOutputStream = serializer.serializeStream(serBuffer)
 
   // Native instance for JNI calls
   private val native = new Native()
 
-  // Native client handle for Rust-side operations
+  // Native client handle (created lazily)
   private var nativeClientHandle: Long = 0L
 
   // Track if we've been stopped
@@ -91,44 +89,100 @@ class CometCelebornShuffleWriter[K, V](
   // Partition lengths for MapStatus
   private val partitionLengths = new Array[Long](numPartitions)
 
+  // Per-partition buffers for batching data before pushing
+  private val partitionBuffers = new Array[ByteArrayOutputStream](numPartitions)
+  private val partitionSerializers = new Array[Any](numPartitions) // SerializationStream
+
+  // Buffer size threshold for pushing to Celeborn (64KB)
+  private val pushBufferSize = celebornConf.clientPushBufferMaxSize.toInt
+
   /**
    * Initialize the native Celeborn client.
    */
   private def initNativeClient(): Unit = {
     if (nativeClientHandle == 0L) {
-      logInfo(s"Initializing native Celeborn client for shuffle $shuffleId, map $mapId")
-
-      // Get master endpoints from config
       val masterEndpoints = celebornConf.masterEndpoints
+      val masterEndpointsArray = masterEndpoints.toArray
+
+      val attemptId = context.attemptNumber()
+      logInfo(
+        s"Creating native Celeborn client for shuffle $shuffleId, " +
+          s"map $celebornMapId, attemptId=$attemptId, LM=${handle.lifecycleManagerHost}:${handle.lifecycleManagerPort}")
 
       nativeClientHandle = native.createCelebornClient(
         handle.appUniqueId,
-        masterEndpoints,
+        masterEndpointsArray,
         handle.lifecycleManagerHost,
         handle.lifecycleManagerPort,
         shuffleId,
-        mapId,
-        context.attemptNumber(),
+        celebornMapId,
+        attemptId,
         numMappers,
         numPartitions)
 
-      if (nativeClientHandle == 0L) {
-        throw new IOException("Failed to create native Celeborn client")
-      }
+      logInfo(s"Native Celeborn client created with handle $nativeClientHandle")
+    }
+  }
+
+  /**
+   * Get or create a buffer for a partition.
+   */
+  private def getPartitionBuffer(partitionId: Int): (ByteArrayOutputStream, Any) = {
+    if (partitionBuffers(partitionId) == null) {
+      partitionBuffers(partitionId) = new ByteArrayOutputStream(pushBufferSize)
+      partitionSerializers(partitionId) =
+        serializer.serializeStream(partitionBuffers(partitionId))
+    }
+    val serStream = partitionSerializers(partitionId)
+      .asInstanceOf[org.apache.spark.serializer.SerializationStream]
+    (partitionBuffers(partitionId), serStream)
+  }
+
+  /**
+   * Flush a partition buffer to Celeborn via native client.
+   */
+  private def flushPartition(partitionId: Int): Unit = {
+    val buffer = partitionBuffers(partitionId)
+    val serStream = partitionSerializers(partitionId)
+
+    // First flush the serialization stream to ensure all data is written to buffer
+    if (serStream != null) {
+      serStream.asInstanceOf[org.apache.spark.serializer.SerializationStream].flush()
+    }
+
+    // Now check if buffer has data to push
+    if (buffer != null && buffer.size() > 0) {
+      val data = buffer.toByteArray
+      val dataLength = data.length
+
+      logInfo(s"Flushing partition $partitionId with $dataLength bytes to Celeborn")
+
+      // Push data to Celeborn using native Rust client
+      val pushStartTime = System.nanoTime()
+      native.celebornPushData(nativeClientHandle, partitionId, data)
+      val pushTime = System.nanoTime() - pushStartTime
+
+      // Update metrics
+      metrics.incBytesWritten(dataLength)
+      metrics.incWriteTime(pushTime)
+      partitionLengths(partitionId) += dataLength
+
+      // Reset buffer for reuse
+      buffer.reset()
     }
   }
 
   override def write(records: Iterator[Product2[K, V]]): Unit = {
-    // Initialize native client
-    initNativeClient()
-
     val writeStartTime = System.nanoTime()
     var recordsWritten = 0L
-    var bytesWritten = 0L
+
+    logInfo(
+      s"Starting shuffle write for shuffle $shuffleId, map $mapId " +
+        s"(celebornMapId=$celebornMapId), numPartitions=$numPartitions, numMappers=$numMappers")
 
     try {
-      // Use Spark's serializer to serialize key-value pairs
-      // This ensures compatibility with the Reader which uses the same serializer
+      // Initialize native client
+      initNativeClient()
 
       while (records.hasNext) {
         val record = records.next()
@@ -138,40 +192,51 @@ class CometCelebornShuffleWriter[K, V](
         // Determine partition for this record
         val partition = dep.partitioner.getPartition(key)
 
-        // Serialize key-value pair using Spark's serializer
-        // Use ClassTag[Any] as the type tag for serialization
-        serBuffer.reset()
-        serOutputStream.writeKey(key)(ClassTag.Any.asInstanceOf[ClassTag[K]])
-        serOutputStream.writeValue(value)(ClassTag.Any.asInstanceOf[ClassTag[V]])
-        serOutputStream.flush()
+        // Get buffer and serializer for this partition
+        val (buffer, serStream) = getPartitionBuffer(partition)
+        val typedSerStream =
+          serStream.asInstanceOf[org.apache.spark.serializer.SerializationStream]
 
-        val serializedBytes = serBuffer.toByteArray
-
-        logDebug(
-          s"Serialized record: key=$key, value=$value, " +
-            s"bytes=${serializedBytes.length}, partition=$partition")
-
-        // Push serialized data to Celeborn via native code
-        val success = native.celebornPushData(nativeClientHandle, partition, serializedBytes)
-
-        if (success) {
-          bytesWritten += serializedBytes.length
-          partitionLengths(partition) += serializedBytes.length
-          logDebug(s"Successfully pushed data to partition $partition")
-        } else {
-          logWarning(s"Failed to push data to partition $partition")
-        }
+        // Serialize key-value pair
+        typedSerStream.writeKey(key)(ClassTag.Any.asInstanceOf[ClassTag[K]])
+        typedSerStream.writeValue(value)(ClassTag.Any.asInstanceOf[ClassTag[V]])
 
         recordsWritten += 1
+
+        logInfo(
+          s"After writing record $recordsWritten to partition $partition, " +
+            s"buffer size: ${buffer.size()}")
+
+        // Flush if buffer is large enough
+        if (buffer.size() >= pushBufferSize) {
+          flushPartition(partition)
+        }
+      }
+
+      // Flush serialization streams first to ensure all data is written to buffers
+      for (partitionId <- 0 until numPartitions) {
+        if (partitionSerializers(partitionId) != null) {
+          val serStream = partitionSerializers(partitionId)
+            .asInstanceOf[org.apache.spark.serializer.SerializationStream]
+          serStream.flush()
+          logInfo(
+            s"After flushing serStream for partition $partitionId, " +
+              s"buffer size: ${partitionBuffers(partitionId).size()}")
+        }
+      }
+
+      // Flush all remaining data
+      for (partitionId <- 0 until numPartitions) {
+        flushPartition(partitionId)
       }
 
       // Update metrics
       val writeTime = System.nanoTime() - writeStartTime
       metrics.incRecordsWritten(recordsWritten)
-      metrics.incBytesWritten(bytesWritten)
-      metrics.incWriteTime(writeTime)
 
-      logInfo(s"Shuffle $shuffleId map $mapId wrote $recordsWritten records, $bytesWritten bytes")
+      logInfo(
+        s"Shuffle $shuffleId map $mapId wrote $recordsWritten records " +
+          s"in ${writeTime / 1e6} ms")
 
     } catch {
       case e: Exception =>
@@ -187,36 +252,44 @@ class CometCelebornShuffleWriter[K, V](
     stopping = true
 
     try {
-      // Close serialization stream
-      serOutputStream.close()
-
-      if (success) {
-        // Commit the map output
-        if (nativeClientHandle != 0L) {
-          native.celebornMapperEnd(nativeClientHandle)
+      // Close all serialization streams
+      for (partitionId <- 0 until numPartitions) {
+        if (partitionSerializers(partitionId) != null) {
+          partitionSerializers(partitionId)
+            .asInstanceOf[org.apache.spark.serializer.SerializationStream]
+            .close()
         }
+      }
+
+      if (success && nativeClientHandle != 0L) {
+        // Signal mapper end to Celeborn via native client
+        native.celebornMapperEnd(nativeClientHandle)
 
         // Create MapStatus with partition lengths
         mapStatus = MapStatus(SparkEnv.get.blockManager.shuffleServerId, partitionLengths, mapId)
 
-        logInfo(s"Shuffle $shuffleId map $mapId completed successfully")
+        logInfo(
+          s"Shuffle $shuffleId map $mapId completed successfully, " +
+            s"total bytes: ${partitionLengths.sum}")
         Some(mapStatus)
       } else {
-        // Abort the map output
-        if (nativeClientHandle != 0L) {
-          native.releaseCelebornClient(nativeClientHandle)
-          nativeClientHandle = 0L
-        }
+        // Abort - no need to do anything special, Celeborn will handle cleanup
+        logInfo(s"Shuffle $shuffleId map $mapId aborted")
         None
       }
     } catch {
       case e: Exception =>
         logError(s"Error stopping shuffle writer for shuffle $shuffleId, map $mapId", e)
-        None
+        throw e
     } finally {
-      // Clean up native resources
+      // Release native client
       if (nativeClientHandle != 0L) {
-        native.releaseCelebornClient(nativeClientHandle)
+        try {
+          native.releaseCelebornClient(nativeClientHandle)
+        } catch {
+          case e: Exception =>
+            logWarning(s"Error releasing native Celeborn client", e)
+        }
         nativeClientHandle = 0L
       }
     }

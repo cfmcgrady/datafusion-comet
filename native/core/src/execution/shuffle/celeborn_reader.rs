@@ -414,9 +414,13 @@ impl CelebornClientManager {
         }
 
         // Create new client
+        // Note: Disable compression in Rust client because the LZ4 format used by lz4_flex
+        // is not compatible with Celeborn's Java LZ4 format (which includes magic, checksum, etc.)
+        // The Java side will handle compression/decompression.
         let config = CelebornConfig::builder()
             .app_id(app_id)
             .master_endpoints(master_endpoints)
+            .compression_codec(celeborn_client::CompressionCodec::None)
             .build()
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
 

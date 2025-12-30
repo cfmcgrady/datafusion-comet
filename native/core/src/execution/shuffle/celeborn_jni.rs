@@ -65,8 +65,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createCelebornClient(
     num_partitions: jint,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
+        eprintln!("[CELEBORN-JNI] createCelebornClient called");
+        
         let app_id: String = env.get_string(&app_id)?.into();
         let lm_host: String = env.get_string(&lifecycle_manager_host)?.into();
+        eprintln!("[CELEBORN-JNI] app_id={}, lm_host={}, lm_port={}", app_id, lm_host, lifecycle_manager_port);
 
         // Parse master endpoints
         let num_endpoints = env.get_array_length(&master_endpoints)?;
@@ -87,12 +90,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createCelebornClient(
         })?;
 
         // Register shuffle
+        eprintln!("[CELEBORN-JNI] Registering shuffle {} with {} mappers and {} partitions", shuffle_id, num_mappers, num_partitions);
         runtime.block_on(async {
             client
                 .register_shuffle(shuffle_id, num_mappers, num_partitions)
                 .await
-                .map_err(|e| CometError::Internal(format!("Failed to register shuffle: {}", e)))
+                .map_err(|e| {
+                    eprintln!("[CELEBORN-JNI] Failed to register shuffle: {}", e);
+                    CometError::Internal(format!("Failed to register shuffle: {}", e))
+                })
         })?;
+        eprintln!("[CELEBORN-JNI] Shuffle {} registered successfully", shuffle_id);
 
         // Create context
         let context = Box::new(CelebornContext {
@@ -125,6 +133,21 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_celebornPushData(
         let context = &*(context_handle as *const CelebornContext);
         let data_bytes = env.convert_byte_array(data)?;
 
+        // Debug: write to file for debugging
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/celeborn_jni_debug.log")
+        {
+            let _ = writeln!(file, "[CELEBORN-JNI] celebornPushData: shuffle={}, map={}, attempt={}, partition={}, data_len={}",
+                context.shuffle_id, context.map_id, context.attempt_id, partition_id, data_bytes.len());
+            
+            // Log first 32 bytes of data for debugging
+            let preview: Vec<u8> = data_bytes.iter().take(32).cloned().collect();
+            let _ = writeln!(file, "[CELEBORN-JNI] Data preview (first 32 bytes): {:02x?}", preview);
+        }
+
         let runtime = get_runtime();
         runtime.block_on(async {
             context
@@ -137,9 +160,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_celebornPushData(
                     &data_bytes,
                 )
                 .await
-                .map_err(|e| CometError::Internal(format!("Failed to push data: {}", e)))
+                .map_err(|e| {
+                    eprintln!("[CELEBORN-JNI] Failed to push data: {}", e);
+                    CometError::Internal(format!("Failed to push data: {}", e))
+                })
         })?;
 
+        eprintln!("[CELEBORN-JNI] Push data successful for partition {}", partition_id);
         Ok(JNI_TRUE)
     })
 }

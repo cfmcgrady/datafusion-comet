@@ -140,12 +140,17 @@ class CometCelebornShuffleManager(conf: SparkConf, isDriver: Boolean)
    * Check if Comet Celeborn shuffle should be used for this shuffle.
    */
   private def shouldUseCelebornShuffle(numPartitions: Int): Boolean = {
-    val cometEnabled = conf.getBoolean(CometConf.COMET_EXEC_ENABLED.key, false)
+    // Use the actual default values from CometConf
+    val cometEnabled = conf.getBoolean(CometConf.COMET_EXEC_ENABLED.key, true)
     val celebornEnabled = conf.getBoolean(CometConf.COMET_SHUFFLE_CELEBORN_ENABLED.key, false)
 
     // Check if Celeborn master endpoints are configured
     val masterEndpoints = celebornConf.masterEndpoints
     val hasMasterEndpoints = masterEndpoints != null && masterEndpoints.nonEmpty
+
+    logInfo(
+      s"Celeborn shuffle check: cometEnabled=$cometEnabled, " +
+        s"celebornEnabled=$celebornEnabled, hasMasterEndpoints=$hasMasterEndpoints")
 
     if (celebornEnabled && !hasMasterEndpoints) {
       logWarning(
@@ -197,29 +202,12 @@ class CometCelebornShuffleManager(conf: SparkConf, isDriver: Boolean)
 
     handle match {
       case h: CometCelebornShuffleHandle[K @unchecked, V @unchecked, _] =>
-        // Get or create ShuffleClient for this executor
-        if (shuffleClient == null) {
-          synchronized {
-            if (shuffleClient == null) {
-              shuffleClient = ShuffleClient.get(
-                h.appUniqueId,
-                h.lifecycleManagerHost,
-                h.lifecycleManagerPort,
-                celebornConf,
-                h.userIdentifier,
-                null // extension
-              )
-            }
-          }
-        }
-
-        // Create Comet Celeborn shuffle writer
+        // Create Comet Celeborn shuffle writer using native Rust client
         new CometCelebornShuffleWriter[K, V](
           handle = h,
           mapId = mapId.toInt,
           context = context,
           celebornConf = celebornConf,
-          shuffleClient = shuffleClient,
           metrics = metrics)
 
       case _ =>

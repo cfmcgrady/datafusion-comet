@@ -43,21 +43,41 @@ class CometCelebornIntergrationSuite extends CometTestBase {
       GROUP BY value
     """)
 
-    val result = df.count()
-    println(s"Group by count: $result")
-    assert(result == 2, s"Expected count 2, got $result")
+    // Collect the data and verify the results
+    val data = df.collect()
+    assert(data.length == 2, s"Expected 2 rows, got ${data.length}")
 
-    // Also check the actual data
-    df.show()
+    // Verify the actual values
+    val resultMap = data.map(row => (row.getInt(0), row.getLong(1))).toMap
+    assert(resultMap(1) == 2, s"Expected count 2 for value 1, got ${resultMap(1)}")
+    assert(resultMap(2) == 1, s"Expected count 1 for value 2, got ${resultMap(2)}")
   }
 
   override def sparkConf: SparkConf = {
     val conf = super.sparkConf
+    // Set the Celeborn shuffle manager
     conf.set(
       "spark.shuffle.manager",
       "org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager")
+
+    // Celeborn master endpoints configuration
     conf.set("spark.celeborn.master.endpoints", "192.168.3.17:9097")
+//    conf.set("spark.celeborn.master.endpoints", "10.27.36.96:9097")
+
+    // Enable Comet Celeborn shuffle integration
     conf.set("spark.comet.shuffle.celeborn.enabled", "true")
+
+    // Ensure Comet execution is enabled (should be true by default, but explicit is better)
+    conf.set(CometConf.COMET_ENABLED.key, "true")
+    conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
+    conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
+
+    // Enable debug logging for troubleshooting
+    conf.set("spark.sql.adaptive.enabled", "false") // Disable AQE for simpler debugging
+
+    // Disable compression since Rust client doesn't support LZ4 compression yet
+    conf.set("spark.celeborn.client.shuffle.compression.codec", "NONE")
+
     conf
   }
 }
