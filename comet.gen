@@ -1,0 +1,160 @@
+/* 001 */ public Object generate(Object[] references) {
+/* 002 */   return new GeneratedIteratorForCodegenStage1(references);
+/* 003 */ }
+/* 004 */
+/* 005 */ // codegenStageId=1
+/* 006 */ final class GeneratedIteratorForCodegenStage1 extends org.apache.spark.sql.execution.BufferedRowIterator {
+/* 007 */   private Object[] references;
+/* 008 */   private scala.collection.Iterator[] inputs;
+/* 009 */   private int columnartorow_batchIdx_0;
+/* 010 */   private org.apache.comet.vector.CometVector[] columnartorow_mutableStateArray_2 = new org.apache.comet.vector.CometVector[1];
+/* 011 */   private org.apache.spark.sql.catalyst.expressions.codegen.UnsafeRowWriter[] columnartorow_mutableStateArray_3 = new org.apache.spark.sql.catalyst.expressions.codegen.UnsafeRowWriter[3];
+/* 012 */   private org.apache.spark.sql.vectorized.ColumnarBatch[] columnartorow_mutableStateArray_1 = new org.apache.spark.sql.vectorized.ColumnarBatch[1];
+/* 013 */   private scala.collection.Iterator[] columnartorow_mutableStateArray_0 = new scala.collection.Iterator[1];
+/* 014 */   private org.apache.spark.sql.catalyst.expressions.codegen.UnsafeArrayWriter[] columnartorow_mutableStateArray_4 = new org.apache.spark.sql.catalyst.expressions.codegen.UnsafeArrayWriter[2];
+/* 015 */
+/* 016 */   public GeneratedIteratorForCodegenStage1(Object[] references) {
+/* 017 */     this.references = references;
+/* 018 */   }
+/* 019 */
+/* 020 */   public void init(int index, scala.collection.Iterator[] inputs) {
+/* 021 */     partitionIndex = index;
+/* 022 */     this.inputs = inputs;
+/* 023 */     columnartorow_mutableStateArray_0[0] = inputs[0];
+/* 024 */
+/* 025 */     columnartorow_mutableStateArray_3[0] = new org.apache.spark.sql.catalyst.expressions.codegen.UnsafeRowWriter(1, 32);
+/* 026 */     columnartorow_mutableStateArray_4[0] = new org.apache.spark.sql.catalyst.expressions.codegen.UnsafeArrayWriter(columnartorow_mutableStateArray_3[0], 8);
+/* 027 */     columnartorow_mutableStateArray_3[1] = new org.apache.spark.sql.catalyst.expressions.codegen.UnsafeRowWriter(1, 32);
+/* 028 */     columnartorow_mutableStateArray_4[1] = new org.apache.spark.sql.catalyst.expressions.codegen.UnsafeArrayWriter(columnartorow_mutableStateArray_3[1], 8);
+/* 029 */     columnartorow_mutableStateArray_3[2] = new org.apache.spark.sql.catalyst.expressions.codegen.UnsafeRowWriter(2, 64);
+/* 030 */
+/* 031 */   }
+/* 032 */
+/* 033 */   private UTF8String project_elementToString_0(byte[] element) {
+/* 034 */     UTF8String elementStr = null;
+/* 035 */     elementStr = UTF8String.fromString(org.apache.spark.sql.catalyst.util.SparkStringUtils.getHexString(element));
+/* 036 */     return elementStr;
+/* 037 */   }
+/* 038 */
+/* 039 */   private void project_doConsume_0(ArrayData project_expr_0_0, boolean project_exprIsNull_0_0) throws java.io.IOException {
+/* 040 */     // common sub-expressions
+/* 041 */
+/* 042 */     UTF8String project_value_1;
+/* 043 */     if (project_exprIsNull_0_0) {
+/* 044 */       project_value_1 = UTF8String.fromString("NULL");
+/* 045 */     } else {
+/* 046 */       org.apache.spark.unsafe.UTF8StringBuilder project_buffer_0 = new org.apache.spark.unsafe.UTF8StringBuilder();
+/* 047 */       project_buffer_0.append("[");
+/* 048 */       if (project_expr_0_0.numElements() > 0) {
+/* 049 */         if (project_expr_0_0.isNullAt(0)) {
+/* 050 */           project_buffer_0.append("NULL");
+/* 051 */         } else {
+/* 052 */           project_buffer_0.append(project_elementToString_0(project_expr_0_0.getBinary(0)));
+/* 053 */         }
+/* 054 */         for (int project_loopIndex_0 = 1; project_loopIndex_0 < project_expr_0_0.numElements(); project_loopIndex_0++) {
+/* 055 */           project_buffer_0.append(",");
+/* 056 */           if (project_expr_0_0.isNullAt(project_loopIndex_0)) {
+/* 057 */             project_buffer_0.append(" NULL");
+/* 058 */           } else {
+/* 059 */             project_buffer_0.append(" ");
+/* 060 */             project_buffer_0.append(project_elementToString_0(project_expr_0_0.getBinary(project_loopIndex_0)));
+/* 061 */           }
+/* 062 */         }
+/* 063 */       }
+/* 064 */       project_buffer_0.append("]");;
+/* 065 */       project_value_1 = project_buffer_0.build();
+/* 066 */     }
+/* 067 */     boolean project_isNull_4 = project_exprIsNull_0_0;
+/* 068 */     ArrayData project_value_4 = null;
+/* 069 */
+/* 070 */     if (!project_exprIsNull_0_0) {
+/* 071 */       final int project_numElements_1 = project_expr_0_0.numElements();
+/* 072 */
+/* 073 */       ArrayData project_arrayData_0 = ArrayData.allocateArrayData(
+/* 074 */         -1, project_numElements_1, " reverse failed.");
+/* 075 */
+/* 076 */       for (int project_i_0 = 0; project_i_0 < project_numElements_1; project_i_0++) {
+/* 077 */         int project_j_0 = project_numElements_1 - project_i_0 - 1;
+/* 078 */         project_arrayData_0.update(project_i_0, project_expr_0_0.getBinary(project_j_0));
+/* 079 */       }
+/* 080 */       project_value_4 = project_arrayData_0;
+/* 081 */
+/* 082 */     }
+/* 083 */     UTF8String project_value_3;
+/* 084 */     if (project_isNull_4) {
+/* 085 */       project_value_3 = UTF8String.fromString("NULL");
+/* 086 */     } else {
+/* 087 */       org.apache.spark.unsafe.UTF8StringBuilder project_buffer_1 = new org.apache.spark.unsafe.UTF8StringBuilder();
+/* 088 */       project_buffer_1.append("[");
+/* 089 */       if (project_value_4.numElements() > 0) {
+/* 090 */         if (project_value_4.isNullAt(0)) {
+/* 091 */           project_buffer_1.append("NULL");
+/* 092 */         } else {
+/* 093 */           project_buffer_1.append(project_elementToString_1(project_value_4.getBinary(0)));
+/* 094 */         }
+/* 095 */         for (int project_loopIndex_1 = 1; project_loopIndex_1 < project_value_4.numElements(); project_loopIndex_1++) {
+/* 096 */           project_buffer_1.append(",");
+/* 097 */           if (project_value_4.isNullAt(project_loopIndex_1)) {
+/* 098 */             project_buffer_1.append(" NULL");
+/* 099 */           } else {
+/* 100 */             project_buffer_1.append(" ");
+/* 101 */             project_buffer_1.append(project_elementToString_1(project_value_4.getBinary(project_loopIndex_1)));
+/* 102 */           }
+/* 103 */         }
+/* 104 */       }
+/* 105 */       project_buffer_1.append("]");;
+/* 106 */       project_value_3 = project_buffer_1.build();
+/* 107 */     }
+/* 108 */     columnartorow_mutableStateArray_3[2].reset();
+/* 109 */
+/* 110 */     columnartorow_mutableStateArray_3[2].write(0, project_value_1);
+/* 111 */
+/* 112 */     columnartorow_mutableStateArray_3[2].write(1, project_value_3);
+/* 113 */     append((columnartorow_mutableStateArray_3[2].getRow()));
+/* 114 */
+/* 115 */   }
+/* 116 */
+/* 117 */   private void columnartorow_nextBatch_0() throws java.io.IOException {
+/* 118 */     if (columnartorow_mutableStateArray_0[0].hasNext()) {
+/* 119 */       columnartorow_mutableStateArray_1[0] = (org.apache.spark.sql.vectorized.ColumnarBatch)columnartorow_mutableStateArray_0[0].next();
+/* 120 */       ((org.apache.spark.sql.execution.metric.SQLMetric) references[1] /* numInputBatches */).add(1);
+/* 121 */       ((org.apache.spark.sql.execution.metric.SQLMetric) references[0] /* numOutputRows */).add(columnartorow_mutableStateArray_1[0].numRows());
+/* 122 */       columnartorow_batchIdx_0 = 0;
+/* 123 */       columnartorow_mutableStateArray_2[0] = (org.apache.comet.vector.CometVector) columnartorow_mutableStateArray_1[0].column(0);
+/* 124 */
+/* 125 */     }
+/* 126 */   }
+/* 127 */
+/* 128 */   private UTF8String project_elementToString_1(byte[] element) {
+/* 129 */     UTF8String elementStr = null;
+/* 130 */     elementStr = UTF8String.fromString(org.apache.spark.sql.catalyst.util.SparkStringUtils.getHexString(element));
+/* 131 */     return elementStr;
+/* 132 */   }
+/* 133 */
+/* 134 */   protected void processNext() throws java.io.IOException {
+/* 135 */     if (columnartorow_mutableStateArray_1[0] == null) {
+/* 136 */       columnartorow_nextBatch_0();
+/* 137 */     }
+/* 138 */     while ( columnartorow_mutableStateArray_1[0] != null) {
+/* 139 */       int columnartorow_numRows_0 = columnartorow_mutableStateArray_1[0].numRows();
+/* 140 */       int columnartorow_localEnd_0 = columnartorow_numRows_0 - columnartorow_batchIdx_0;
+/* 141 */       for (int columnartorow_localIdx_0 = 0; columnartorow_localIdx_0 < columnartorow_localEnd_0; columnartorow_localIdx_0++) {
+/* 142 */         int columnartorow_rowIdx_0 = columnartorow_batchIdx_0 + columnartorow_localIdx_0;
+/* 143 */         boolean columnartorow_isNull_0 = columnartorow_mutableStateArray_2[0].isNullAt(columnartorow_rowIdx_0);
+/* 144 */         ArrayData columnartorow_value_0 = columnartorow_isNull_0 ? null : (columnartorow_mutableStateArray_2[0].getArray(columnartorow_rowIdx_0));
+/* 145 */
+/* 146 */         project_doConsume_0(columnartorow_value_0, columnartorow_isNull_0);
+/* 147 */         if (shouldStop()) { columnartorow_batchIdx_0 = columnartorow_rowIdx_0 + 1; return; }
+/* 148 */       }
+/* 149 */       columnartorow_batchIdx_0 = columnartorow_numRows_0;
+/* 150 */       columnartorow_mutableStateArray_1[0].closeIfFreeable();
+/* 151 */       columnartorow_mutableStateArray_1[0] = null;
+/* 152 */       columnartorow_nextBatch_0();
+/* 153 */     }
+/* 154 */     // clean up resources
+/* 155 */     if (columnartorow_mutableStateArray_1[0] != null) {
+/* 156 */       columnartorow_mutableStateArray_1[0].close();
+/* 157 */     }
+/* 158 */   }
+/* 159 */
+/* 160 */ }

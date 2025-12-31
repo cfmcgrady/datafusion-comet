@@ -33,8 +33,9 @@ use celeborn_client::{
     CompressionCodec as CelebornCompressionCodec,
     // Re-use repartitioner utilities from celeborn_client
     ScratchSpace, map_partition_ids_to_starts_and_indices, pmod,
+    // Sort-based pusher for memory-efficient shuffle
+    SortBasedPusher, SortBasedPusherConfig,
 };
-use dashmap::DashMap;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::EmptyRecordBatchStream;
@@ -66,6 +67,22 @@ use std::{
     sync::Arc,
 };
 use tokio::time::Instant;
+use celeborn_client::CelebornError;
+
+/// Shuffle writer mode for Celeborn
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShuffleWriterMode {
+    /// Hash-based writer: immediate push per partition
+    Hash,
+    /// Sort-based writer: accumulate and batch push
+    Sort,
+}
+
+impl Default for ShuffleWriterMode {
+    fn default() -> Self {
+        ShuffleWriterMode::Sort // Default to Sort for better stability
+    }
+}
 
 /// Configuration for Celeborn shuffle writer
 #[derive(Debug, Clone)]
@@ -90,6 +107,12 @@ pub struct CelebornShuffleConfig {
     pub lifecycle_manager_port: i32,
     /// Celeborn transport compression codec (None, Lz4, Zstd)
     pub celeborn_compression: CelebornCompressionCodec,
+    /// Shuffle writer mode (Hash or Sort)
+    pub writer_mode: ShuffleWriterMode,
+    /// Memory threshold for sort-based writer (default: 64MB)
+    pub sort_memory_threshold: usize,
+    /// Push buffer max size for sort-based writer (default: 4MB)
+    pub push_buffer_max_size: usize,
 }
 
 impl Default for CelebornShuffleConfig {
@@ -106,6 +129,12 @@ impl Default for CelebornShuffleConfig {
             lifecycle_manager_port: 0,
             // Default to Zstd compression for better compression ratio
             celeborn_compression: CelebornCompressionCodec::Zstd,
+            // Default to Sort mode for better memory efficiency
+            writer_mode: ShuffleWriterMode::Sort,
+            // 64MB memory threshold for sort-based writer
+            sort_memory_threshold: 64 * 1024 * 1024,
+            // 4MB push buffer size
+            push_buffer_max_size: 4 * 1024 * 1024,
         }
     }
 }
@@ -332,10 +361,6 @@ struct CelebornShuffleRepartitioner {
     attempt_id: i32,
     /// Number of mappers
     num_mappers: i32,
-    /// Buffered batches
-    buffered_batches: Vec<RecordBatch>,
-    /// Partition indices for each buffered batch
-    partition_indices: Vec<Vec<(u32, u32)>>,
     /// Shuffle block writer for encoding
     shuffle_block_writer: ShuffleBlockWriter,
     /// Partitioning scheme
@@ -352,10 +377,12 @@ struct CelebornShuffleRepartitioner {
     reservation: MemoryReservation,
     /// Whether tracing is enabled
     tracing_enabled: bool,
-    /// Partition buffers for accumulating data before push
-    partition_buffers: DashMap<i32, Vec<u8>>,
-    /// Buffer size threshold for pushing to Celeborn
+    /// Writer mode (Hash or Sort)
+    writer_mode: ShuffleWriterMode,
+    /// Hash-based writer: buffer size threshold for pushing to Celeborn
     push_buffer_size: usize,
+    /// Sort-based writer
+    sort_pusher: Option<SortBasedPusher>,
 }
 
 
@@ -417,14 +444,30 @@ impl CelebornShuffleRepartitioner {
             .with_can_spill(true)
             .register(&runtime.memory_pool);
 
+        let client_arc = Arc::new(client);
+
+        // Initialize sort-based pusher if needed
+        let sort_pusher = if config.writer_mode == ShuffleWriterMode::Sort {
+            let sort_config = SortBasedPusherConfig {
+                shuffle_id: config.shuffle_id,
+                map_id: config.map_id,
+                attempt_id: config.attempt_id,
+                num_mappers: config.num_mappers,
+                num_partitions: config.num_partitions as usize,
+                sort_memory_threshold: config.sort_memory_threshold,
+                push_buffer_max_size: config.push_buffer_max_size,
+            };
+            Some(SortBasedPusher::new(Arc::clone(&client_arc), sort_config))
+        } else {
+            None
+        };
+
         Ok(Self {
-            client: Arc::new(client),
+            client: client_arc,
             shuffle_id: config.shuffle_id,
             map_id: config.map_id,
             attempt_id: config.attempt_id,
             num_mappers: config.num_mappers,
-            buffered_batches: vec![],
-            partition_indices: vec![vec![]; num_output_partitions],
             shuffle_block_writer,
             partitioning,
             runtime,
@@ -433,8 +476,9 @@ impl CelebornShuffleRepartitioner {
             batch_size,
             reservation,
             tracing_enabled,
-            partition_buffers: DashMap::new(),
-            push_buffer_size: 4 * 1024 * 1024, // 4MB default buffer size
+            writer_mode: config.writer_mode,
+            push_buffer_size: config.push_buffer_max_size,
+            sort_pusher,
         })
     }
 
@@ -528,6 +572,25 @@ impl CelebornShuffleRepartitioner {
         partition_row_indices: &[u32],
         partition_starts: &[u32],
     ) -> Result<()> {
+        match self.writer_mode {
+            ShuffleWriterMode::Hash => {
+                self.push_partitioned_data_hash(input, partition_row_indices, partition_starts)
+                    .await
+            }
+            ShuffleWriterMode::Sort => {
+                self.push_partitioned_data_sort(input, partition_row_indices, partition_starts)
+                    .await
+            }
+        }
+    }
+
+    /// Hash-based push: immediate push per partition
+    async fn push_partitioned_data_hash(
+        &mut self,
+        input: &RecordBatch,
+        partition_row_indices: &[u32],
+        partition_starts: &[u32],
+    ) -> Result<()> {
         let num_partitions = partition_starts.len() - 1;
 
         for (partition_id, (&start, &end)) in partition_starts
@@ -573,19 +636,81 @@ impl CelebornShuffleRepartitioner {
         Ok(())
     }
 
+    /// Sort-based push: accumulate and batch push
+    async fn push_partitioned_data_sort(
+        &mut self,
+        input: &RecordBatch,
+        partition_row_indices: &[u32],
+        partition_starts: &[u32],
+    ) -> Result<()> {
+        let sort_pusher = self
+            .sort_pusher
+            .as_mut()
+            .ok_or_else(|| DataFusionError::Internal("Sort pusher not initialized".to_string()))?;
+
+        let num_partitions = partition_starts.len() - 1;
+
+        for (partition_id, (&start, &end)) in partition_starts
+            .iter()
+            .tuple_windows()
+            .enumerate()
+            .filter(|(_, (start, end))| start < end)
+        {
+            let row_indices = &partition_row_indices[start as usize..end as usize];
+
+            // Create indices for interleave
+            let indices: Vec<(usize, usize)> = row_indices
+                .iter()
+                .map(|&idx| (0usize, idx as usize))
+                .collect();
+
+            // Extract rows for this partition
+            let partition_batch = interleave_record_batch(&[input], &indices)?;
+
+            // Encode batch to IPC format
+            let mut buffer = Vec::new();
+            let mut cursor = Cursor::new(&mut buffer);
+            self.shuffle_block_writer
+                .write_batch(&partition_batch, &mut cursor, &self.metrics.encode_time)?;
+
+            // Insert into sort pusher
+            let _needs_push = sort_pusher.insert_record(partition_id as u32, &buffer)
+                .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+            // Check if we need to trigger a push
+            if sort_pusher.needs_push() {
+                let mut push_timer = self.metrics.push_time.timer();
+                let bytes_freed = sort_pusher.push_data().await
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                push_timer.stop();
+                self.metrics.bytes_pushed.add(bytes_freed);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Finish the shuffle and signal mapper end
     pub async fn finish(&mut self) -> Result<()> {
         with_trace_async("celeborn_finish", self.tracing_enabled, || async {
-            // Signal mapper end to Celeborn
-            self.client
-                .mapper_end(
-                    self.shuffle_id,
-                    self.map_id,
-                    self.attempt_id,
-                    self.num_mappers,
-                )
-                .await
-                .map_err(|e| DataFusionError::External(Box::new(e)))?;
+            // For sort-based mode, flush remaining data
+            if let Some(sort_pusher) = self.sort_pusher.as_mut() {
+                let mut push_timer = self.metrics.push_time.timer();
+                sort_pusher.finish().await
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                push_timer.stop();
+            } else {
+                // For hash-based mode, signal mapper end directly
+                self.client
+                    .mapper_end(
+                        self.shuffle_id,
+                        self.map_id,
+                        self.attempt_id,
+                        self.num_mappers,
+                    )
+                    .await
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+            }
 
             self.reservation.free();
             Ok(())
