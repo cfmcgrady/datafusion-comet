@@ -121,6 +121,7 @@ class CometExecIterator(
       memoryConfig.memoryLimit,
       memoryConfig.memoryLimitPerTask,
       taskAttemptId,
+      TaskContext.get().attemptNumber(),
       keyUnwrapper)
   }
 

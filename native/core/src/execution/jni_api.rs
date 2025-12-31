@@ -118,6 +118,8 @@ struct ExecutionContext {
     pub id: i64,
     /// Task attempt id
     pub task_attempt_id: i64,
+    /// Attempt number
+    pub attempt_number: i32,
     /// The deserialized Spark plan
     pub spark_plan: Operator,
     /// The number of partitions
@@ -174,6 +176,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     memory_limit: jlong,
     memory_limit_per_task: jlong,
     task_attempt_id: jlong,
+    attempt_number: jint,
     key_unwrapper_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
@@ -265,6 +268,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let exec_context = Box::new(ExecutionContext {
                 id,
                 task_attempt_id,
+                attempt_number,
                 spark_plan,
                 partition_count: partition_count as usize,
                 root_op: None,
@@ -471,9 +475,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             // query plan, we need to defer stream initialization to first time execution.
             if exec_context.root_op.is_none() {
                 let start = Instant::now();
-                let planner =
-                    PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
-                        .with_exec_id(exec_context_id);
+                let planner = PhysicalPlanner::new(
+                    Arc::clone(&exec_context.session_ctx),
+                    partition,
+                    exec_context.attempt_number,
+                )
+                .with_exec_id(exec_context_id);
                 let (scans, root_op) = planner.create_plan(
                     &exec_context.spark_plan,
                     &mut exec_context.input_sources.clone(),

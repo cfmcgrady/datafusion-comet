@@ -107,7 +107,8 @@ class CometCelebornShuffleWriter[K, V](
       val attemptId = context.attemptNumber()
       logInfo(
         s"Creating native Celeborn client for shuffle $shuffleId, " +
-          s"map $celebornMapId, attemptId=$attemptId, LM=${handle.lifecycleManagerHost}:${handle.lifecycleManagerPort}")
+          s"map $celebornMapId, attemptId=$attemptId, " +
+          s"LM=${handle.lifecycleManagerHost}:${handle.lifecycleManagerPort}")
 
       nativeClientHandle = native.createCelebornClient(
         handle.appUniqueId,

@@ -34,7 +34,10 @@ use crate::{
     },
 };
 #[cfg(feature = "celeborn")]
-use crate::execution::shuffle::{CelebornShuffleConfig, CelebornShuffleWriterExec};
+use crate::execution::shuffle::{
+    CelebornShuffleConfig, CelebornShuffleReaderConfig, CelebornShuffleReaderExec,
+    CelebornShuffleWriterExec,
+};
 use arrow::compute::CastOptions;
 use arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
@@ -164,21 +167,23 @@ pub struct PhysicalPlanner {
     // The execution context id of this planner.
     exec_context_id: i64,
     partition: i32,
+    attempt_number: i32,
     session_ctx: Arc<SessionContext>,
 }
 
 impl Default for PhysicalPlanner {
     fn default() -> Self {
-        Self::new(Arc::new(SessionContext::new()), 0)
+        Self::new(Arc::new(SessionContext::new()), 0, 0)
     }
 }
 
 impl PhysicalPlanner {
-    pub fn new(session_ctx: Arc<SessionContext>, partition: i32) -> Self {
+    pub fn new(session_ctx: Arc<SessionContext>, partition: i32, attempt_number: i32) -> Self {
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
             partition,
+            attempt_number,
         }
     }
 
@@ -186,6 +191,7 @@ impl PhysicalPlanner {
         Self {
             exec_context_id,
             partition: self.partition,
+            attempt_number: self.attempt_number,
             session_ctx: Arc::clone(&self.session_ctx),
         }
     }
@@ -1284,6 +1290,32 @@ impl PhysicalPlanner {
                         spark_plan.plan_id,
                         shuffle_writer,
                         vec![Arc::clone(&child)],
+                    )),
+                ))
+            }
+            #[cfg(feature = "celeborn")]
+            OpStruct::CelebornShuffleReader(reader) => {
+                let schema = convert_spark_types_to_arrow_schema(reader.schema.as_slice());
+                let config = CelebornShuffleReaderConfig {
+                    master_endpoints: reader.master_endpoints.clone(),
+                    app_id: reader.app_id.clone(),
+                    shuffle_id: reader.shuffle_id,
+                    partition_id: self.partition,
+                    attempt_number: self.attempt_number,
+                    start_map_index: reader.start_map_index,
+                    end_map_index: reader.end_map_index,
+                    lifecycle_manager_host: reader.lifecycle_manager_host.clone(),
+                    lifecycle_manager_port: reader.lifecycle_manager_port,
+                };
+
+                let reader_exec = CelebornShuffleReaderExec::try_new(schema, config)?;
+
+                Ok((
+                    vec![],
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        Arc::new(reader_exec),
+                        vec![],
                     )),
                 ))
             }
@@ -3779,7 +3811,7 @@ mod tests {
             datafusion_functions_nested::make_array::MakeArray::new(),
         ));
         let task_ctx = session_ctx.task_ctx();
-        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0, 0);
 
         // Create a plan for
         // ProjectionExec: expr=[make_array(col_0@0) as col_0]
@@ -3897,7 +3929,7 @@ mod tests {
     fn test_array_repeat() {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
-        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0, 0);
 
         // Mock scan operator with 3 INT32 columns
         let op_scan = Operator {

@@ -42,6 +42,7 @@ class CometCelebornIntergrationSuite extends CometTestBase {
       )
       GROUP BY value
     """)
+    df.count
 
     // Collect the data and verify the results
     val data = df.collect()

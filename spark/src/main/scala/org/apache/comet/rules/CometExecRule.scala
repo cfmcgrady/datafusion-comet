@@ -246,14 +246,22 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
       // For AQE shuffle stage on a Comet shuffle exchange
-      case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
-        convertToComet(s, CometExchangeSink).getOrElse(s)
+      case s @ ShuffleQueryStageExec(_, e: CometShuffleExchangeExec, _) =>
+        if (CometConf.COMET_SHUFFLE_CELEBORN_ENABLED.get(conf)) {
+          convertToComet(s, CometCelebornExchangeSink).getOrElse(s)
+        } else {
+          convertToComet(s, CometExchangeSink).getOrElse(s)
+        }
 
       // For AQE shuffle stage on a reused Comet shuffle exchange
       // Note that we don't need to handle `ReusedExchangeExec` for non-AQE case, because
       // the query plan won't be re-optimized/planned in non-AQE mode.
-      case s @ ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) =>
-        convertToComet(s, CometExchangeSink).getOrElse(s)
+      case s @ ShuffleQueryStageExec(_, ReusedExchangeExec(_, e: CometShuffleExchangeExec), _) =>
+        if (CometConf.COMET_SHUFFLE_CELEBORN_ENABLED.get(conf)) {
+          convertToComet(s, CometCelebornExchangeSink).getOrElse(s)
+        } else {
+          convertToComet(s, CometExchangeSink).getOrElse(s)
+        }
 
       case s: ShuffleExchangeExec =>
         convertToComet(s, CometShuffleExchangeExec).getOrElse(s)

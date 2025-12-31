@@ -92,6 +92,14 @@ class CometCelebornShuffleManager(conf: SparkConf, isDriver: Boolean)
   // LifecycleManager - only created on Driver
   @volatile private var lifecycleManager: LifecycleManager = _
 
+  def getLifecycleManagerHost: String = {
+    if (lifecycleManager != null) lifecycleManager.getHost else null
+  }
+
+  def getLifecycleManagerPort: Int = {
+    if (lifecycleManager != null) lifecycleManager.getPort else 0
+  }
+
   // Application unique ID
   @volatile private var appUniqueId: String = _
 

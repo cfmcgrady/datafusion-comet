@@ -174,9 +174,13 @@ impl ExecutionPlan for CelebornShuffleReaderExec {
         _context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let metrics = CelebornReaderMetrics::new(&self.metrics, 0);
+
+        // Config already has partition_id and attempt_number set from PhysicalPlanner
+        let config = self.config.clone();
+
         let stream = CelebornShuffleStream::new(
             Arc::clone(&self.schema),
-            self.config.clone(),
+            config,
             metrics,
         );
 

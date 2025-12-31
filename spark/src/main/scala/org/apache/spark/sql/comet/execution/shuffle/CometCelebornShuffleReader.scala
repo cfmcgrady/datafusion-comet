@@ -143,7 +143,9 @@ class CometCelebornShuffleReader[K, C](
 
       // Check if stream has data
       val available = inputStream.available()
-      logInfo(s"Got input stream for shuffle $shuffleId partition $partitionId, available bytes: $available")
+      logInfo(
+        s"Got input stream for shuffle $shuffleId partition $partitionId, " +
+          s"available bytes: $available")
 
       // Create iterator from input stream
       new CelebornPartitionIterator[K, C](

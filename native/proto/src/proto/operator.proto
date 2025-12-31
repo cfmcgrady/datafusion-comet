@@ -52,6 +52,7 @@ message Operator {
     ParquetWriter parquet_writer = 113;
     Explode explode = 114;
     CelebornShuffleWriter celeborn_shuffle_writer = 115;
+    CelebornShuffleReader celeborn_shuffle_reader = 116;
   }
 }
 
@@ -263,6 +264,30 @@ message CelebornShuffleWriter {
   string lifecycle_manager_host = 12;
   // LifecycleManager port
   int32 lifecycle_manager_port = 13;
+}
+
+message CelebornShuffleReader {
+  // Application ID
+  string app_id = 1;
+  // Shuffle ID
+  int32 shuffle_id = 2;
+  // Partition ID to read
+  int32 partition_id = 3;
+  // Celeborn master endpoints (comma-separated or repeated?)
+  // Let's use repeated string to match Writer
+  repeated string master_endpoints = 4;
+  // LifecycleManager host
+  string lifecycle_manager_host = 5;
+  // LifecycleManager port
+  int32 lifecycle_manager_port = 6;
+  // Attempt number
+  int32 attempt_number = 7;
+  // Start map index (for range fetch)
+  int32 start_map_index = 8;
+  // End map index (for range fetch)
+  int32 end_map_index = 9;
+  // Schema of the data to read
+  repeated SparkStructField schema = 10;
 }
 
 message ParquetWriter {

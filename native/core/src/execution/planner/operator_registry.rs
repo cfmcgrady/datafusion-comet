@@ -151,6 +151,10 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::CelebornShuffleWriter(_) => Some(OperatorType::CelebornShuffleWriter),
         #[cfg(not(feature = "celeborn"))]
         OpStruct::CelebornShuffleWriter(_) => None, // Celeborn feature not enabled
+        #[cfg(feature = "celeborn")]
+        OpStruct::CelebornShuffleReader(_) => None, // Handled in monolithic planner
+        #[cfg(not(feature = "celeborn"))]
+        OpStruct::CelebornShuffleReader(_) => None,
         OpStruct::ParquetWriter(_) => Some(OperatorType::ParquetWriter),
         OpStruct::Expand(_) => Some(OperatorType::Expand),
         OpStruct::SortMergeJoin(_) => Some(OperatorType::SortMergeJoin),
