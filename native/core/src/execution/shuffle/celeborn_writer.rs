@@ -30,6 +30,7 @@ use arrow::compute::interleave_record_batch;
 use async_trait::async_trait;
 use celeborn_client::{
     CelebornConfig, ExecutorShuffleClient,
+    CompressionCodec as CelebornCompressionCodec,
     // Re-use repartitioner utilities from celeborn_client
     ScratchSpace, map_partition_ids_to_starts_and_indices, pmod,
 };
@@ -87,6 +88,26 @@ pub struct CelebornShuffleConfig {
     pub lifecycle_manager_host: String,
     /// LifecycleManager port
     pub lifecycle_manager_port: i32,
+    /// Celeborn transport compression codec (None, Lz4, Zstd)
+    pub celeborn_compression: CelebornCompressionCodec,
+}
+
+impl Default for CelebornShuffleConfig {
+    fn default() -> Self {
+        Self {
+            master_endpoints: vec![],
+            app_id: String::new(),
+            shuffle_id: 0,
+            map_id: 0,
+            attempt_id: 0,
+            num_mappers: 1,
+            num_partitions: 1,
+            lifecycle_manager_host: String::new(),
+            lifecycle_manager_port: 0,
+            // Default to Zstd compression for better compression ratio
+            celeborn_compression: CelebornCompressionCodec::Zstd,
+        }
+    }
 }
 
 /// The Celeborn shuffle writer operator maps each input partition to M output partitions
@@ -366,10 +387,11 @@ impl CelebornShuffleRepartitioner {
 
         let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec)?;
 
-        // Create Celeborn client configuration
+        // Create Celeborn client configuration with compression
         let celeborn_config = CelebornConfig::builder()
             .app_id(&config.app_id)
             .master_endpoints(config.master_endpoints.clone())
+            .compression_codec(config.celeborn_compression)
             .build()
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
 

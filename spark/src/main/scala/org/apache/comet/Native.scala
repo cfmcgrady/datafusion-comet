@@ -228,6 +228,8 @@ class Native extends NativeBase {
    *   Total number of mappers
    * @param numPartitions
    *   Total number of partitions
+   * @param compressionCodec
+   *   The compression codec for Celeborn transport ("none", "lz4", "zstd")
    * @return
    *   A handle to the native Celeborn client context
    */
@@ -240,7 +242,8 @@ class Native extends NativeBase {
       mapId: Int,
       attemptId: Int,
       numMappers: Int,
-      numPartitions: Int): Long
+      numPartitions: Int,
+      compressionCodec: String): Long
 
   /**
    * Push data to Celeborn for a specific partition.

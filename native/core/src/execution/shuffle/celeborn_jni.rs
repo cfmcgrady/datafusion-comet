@@ -22,7 +22,7 @@
 
 use crate::errors::{try_unwrap_or_throw, CometError};
 use crate::execution::jni_api::get_runtime;
-use celeborn_client::{ClientManager, ExecutorShuffleClient};
+use celeborn_client::{ClientManager, CompressionCodec, ExecutorShuffleClient};
 use jni::{
     objects::{JClass, JObject, JObjectArray, JString},
     sys::{jboolean, jint, jlong, JNI_FALSE, JNI_TRUE},
@@ -45,6 +45,17 @@ struct CelebornContext {
     num_partitions: i32,
 }
 
+/// Parse compression codec from string.
+/// Supported values: "none", "lz4", "zstd" (case-insensitive)
+fn parse_compression_codec(codec_str: &str) -> CompressionCodec {
+    match codec_str.to_lowercase().as_str() {
+        "none" => CompressionCodec::None,
+        "lz4" => CompressionCodec::Lz4,
+        "zstd" => CompressionCodec::Zstd,
+        _ => CompressionCodec::Zstd, // Default to Zstd
+    }
+}
+
 /// Create a new Celeborn shuffle client and return a handle
 ///
 /// # Safety
@@ -62,13 +73,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createCelebornClient(
     attempt_id: jint,
     num_mappers: jint,
     num_partitions: jint,
+    compression_codec: JString,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         eprintln!("[CELEBORN-JNI] createCelebornClient called");
         
         let app_id: String = env.get_string(&app_id)?.into();
         let lm_host: String = env.get_string(&lifecycle_manager_host)?.into();
-        eprintln!("[CELEBORN-JNI] app_id={}, lm_host={}, lm_port={}", app_id, lm_host, lifecycle_manager_port);
+        let codec_str: String = env.get_string(&compression_codec)?.into();
+        let codec = parse_compression_codec(&codec_str);
+        eprintln!("[CELEBORN-JNI] app_id={}, lm_host={}, lm_port={}, compression={:?}",
+            app_id, lm_host, lifecycle_manager_port, codec);
 
         // Parse master endpoints
         let num_endpoints = env.get_array_length(&master_endpoints)?;
@@ -80,11 +95,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createCelebornClient(
             endpoints.push(endpoint);
         }
 
-        // Create client using the runtime
+        // Create client using the runtime with compression
         let runtime = get_runtime();
         let client = runtime.block_on(async {
             CELEBORN_CLIENT_MANAGER
-                .get_or_create_client(&app_id, endpoints, &lm_host, lifecycle_manager_port)
+                .get_or_create_client_with_compression(
+                    &app_id, endpoints, &lm_host, lifecycle_manager_port, codec
+                )
                 .await
                 .map_err(|e| CometError::Internal(format!("Failed to create Celeborn client: {}", e)))
         })?;

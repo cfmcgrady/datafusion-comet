@@ -55,7 +55,7 @@ url = "2.2"
 aws-config = "1.8.10"
 aws-credential-types = "1.2.9"
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "16906c1" }
-celeborn-client = { path = "/Users/fchen/Project/incubator-celeborn/client-rust" }
+celeborn-client = { path = "/Users/fchen/Project/incubator-celeborn/client-rust", features = ["compression-lz4", "compression-zstd"] }
 
 [profile.release]
 debug = true

@@ -77,7 +77,7 @@ class CometCelebornIntergrationSuite extends CometTestBase {
     conf.set("spark.sql.adaptive.enabled", "false") // Disable AQE for simpler debugging
 
     // Disable compression since Rust client doesn't support LZ4 compression yet
-    conf.set("spark.celeborn.client.shuffle.compression.codec", "NONE")
+    conf.set("spark.celeborn.client.shuffle.compression.codec", "zstd")
 
     conf
   }

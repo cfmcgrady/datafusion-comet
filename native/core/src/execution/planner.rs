@@ -1274,6 +1274,8 @@ impl PhysicalPlanner {
                     num_partitions: writer.num_partitions,
                     lifecycle_manager_host: writer.lifecycle_manager_host.clone(),
                     lifecycle_manager_port: writer.lifecycle_manager_port,
+                    // Use Zstd compression for Celeborn transport by default
+                    ..Default::default()
                 };
 
                 let shuffle_writer = Arc::new(CelebornShuffleWriterExec::try_new(

@@ -105,9 +105,13 @@ class CometCelebornShuffleWriter[K, V](
       val masterEndpointsArray = masterEndpoints.toArray
 
       val attemptId = context.attemptNumber()
+      // Get compression codec from Celeborn config, default to zstd
+      val compressionCodec = celebornConf.shuffleCompressionCodec.name().toLowerCase()
+
       logInfo(
         s"Creating native Celeborn client for shuffle $shuffleId, " +
           s"map $celebornMapId, attemptId=$attemptId, " +
+          s"compression=$compressionCodec, " +
           s"LM=${handle.lifecycleManagerHost}:${handle.lifecycleManagerPort}")
 
       nativeClientHandle = native.createCelebornClient(
@@ -119,7 +123,8 @@ class CometCelebornShuffleWriter[K, V](
         celebornMapId,
         attemptId,
         numMappers,
-        numPartitions)
+        numPartitions,
+        compressionCodec)
 
       logInfo(s"Native Celeborn client created with handle $nativeClientHandle")
     }
