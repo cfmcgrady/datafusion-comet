@@ -20,12 +20,19 @@
 //! This module provides integration with Apache Celeborn for distributed shuffle operations.
 //! It implements a shuffle writer that pushes data to Celeborn workers instead of writing
 //! to local disk.
+//!
+//! Note: The core repartitioning logic (`ScratchSpace`, `map_partition_ids_to_starts_and_indices`,
+//! `pmod`) has been moved to the `celeborn_client` crate for reuse by other projects.
 
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use crate::execution::tracing::with_trace_async;
 use arrow::compute::interleave_record_batch;
 use async_trait::async_trait;
-use celeborn_client::{CelebornConfig, ExecutorShuffleClient};
+use celeborn_client::{
+    CelebornConfig, ExecutorShuffleClient,
+    // Re-use repartitioner utilities from celeborn_client
+    ScratchSpace, map_partition_ids_to_starts_and_indices, pmod,
+};
 use dashmap::DashMap;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -330,13 +337,6 @@ struct CelebornShuffleRepartitioner {
     push_buffer_size: usize,
 }
 
-#[derive(Default)]
-struct ScratchSpace {
-    hashes_buf: Vec<u32>,
-    partition_ids: Vec<u32>,
-    partition_row_indices: Vec<u32>,
-    partition_starts: Vec<u32>,
-}
 
 impl CelebornShuffleRepartitioner {
     #[allow(clippy::too_many_arguments)]
@@ -572,43 +572,8 @@ impl CelebornShuffleRepartitioner {
     }
 }
 
-/// Map partition IDs to partition starts and row indices
-fn map_partition_ids_to_starts_and_indices(
-    scratch: &mut ScratchSpace,
-    num_output_partitions: usize,
-    num_rows: usize,
-) {
-    let partition_ids = &mut scratch.partition_ids[..num_rows];
-
-    let partition_counters = &mut scratch.partition_starts;
-    partition_counters.resize(num_output_partitions + 1, 0);
-    partition_counters.fill(0);
-    partition_ids
-        .iter()
-        .for_each(|partition_id| partition_counters[*partition_id as usize] += 1);
-
-    let partition_ends = partition_counters;
-    let mut accum = 0;
-    partition_ends.iter_mut().for_each(|v| {
-        *v += accum;
-        accum = *v;
-    });
-
-    let partition_row_indices = &mut scratch.partition_row_indices;
-    partition_row_indices.resize(num_rows, 0);
-    for (index, partition_id) in partition_ids.iter().enumerate().rev() {
-        partition_ends[*partition_id as usize] -= 1;
-        let end = partition_ends[*partition_id as usize];
-        partition_row_indices[end as usize] = index as u32;
-    }
-}
-
-/// Compute partition ID using positive modulo (same as Spark)
-fn pmod(hash: u32, n: usize) -> usize {
-    let h = hash as i32;
-    let n = n as i32;
-    ((h % n + n) % n) as usize
-}
+// Note: ScratchSpace, map_partition_ids_to_starts_and_indices, and pmod
+// are now imported from celeborn_client crate
 
 impl Debug for CelebornShuffleRepartitioner {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {

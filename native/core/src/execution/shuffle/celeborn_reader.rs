@@ -19,10 +19,13 @@
 //!
 //! This module provides integration with Apache Celeborn for reading shuffle data.
 //! It implements a shuffle reader that fetches data from Celeborn workers.
+//!
+//! Note: The `ClientManager` has been moved to the `celeborn_client` crate for reuse.
 
 use crate::execution::shuffle::read_ipc_compressed;
 use async_trait::async_trait;
-use celeborn_client::{CelebornConfig, ExecutorShuffleClient};
+use celeborn_client::{CelebornConfig, ExecutorShuffleClient, ClientManager};
+use celeborn_client::protocol::BatchIterator;
 use datafusion::{
     arrow::{datatypes::SchemaRef, record_batch::RecordBatch},
     error::{DataFusionError, Result},
@@ -312,33 +315,13 @@ impl CelebornShuffleStream {
             self.metrics.bytes_fetched.add(bytes_read);
         }
         
-        // Process accumulated data - each batch has a header
-        // Format: mapId (4) + attemptId (4) + batchId (4) + compressedSize (4) + data
-        let mut offset = 0;
-        while offset + 16 <= accumulated_data.len() {
-            // Read header
-            let compressed_size = i32::from_be_bytes([
-                accumulated_data[offset + 12],
-                accumulated_data[offset + 13],
-                accumulated_data[offset + 14],
-                accumulated_data[offset + 15],
-            ]) as usize;
-            
-            let data_start = offset + 16;
-            let data_end = data_start + compressed_size;
-            
-            if data_end > accumulated_data.len() {
-                break;
-            }
-            
-            let data = &accumulated_data[data_start..data_end];
+        // Process accumulated data using BatchIterator from celeborn_client
+        for (_header, data) in BatchIterator::new(&accumulated_data) {
             if !data.is_empty() {
                 let batch = read_ipc_compressed(data)?;
                 self.buffered_batches.push(batch);
                 self.metrics.batches_read.add(1);
             }
-            
-            offset = data_end;
         }
         decode_timer.stop();
 
@@ -391,72 +374,8 @@ impl RecordBatchStream for CelebornShuffleStream {
     }
 }
 
-/// Celeborn shuffle client manager for reusing connections
-pub struct CelebornClientManager {
-    /// Cached clients by app_id
-    clients: dashmap::DashMap<String, Arc<ExecutorShuffleClient>>,
-}
-
-impl CelebornClientManager {
-    /// Create a new client manager
-    pub fn new() -> Self {
-        Self {
-            clients: dashmap::DashMap::new(),
-        }
-    }
-
-    /// Get or create a client for the given configuration
-    pub async fn get_or_create_client(
-        &self,
-        app_id: &str,
-        master_endpoints: Vec<String>,
-        lifecycle_manager_host: &str,
-        lifecycle_manager_port: i32,
-    ) -> Result<Arc<ExecutorShuffleClient>> {
-        if let Some(client) = self.clients.get(app_id) {
-            return Ok(Arc::clone(&client));
-        }
-
-        // Create new client
-        // Note: Disable compression in Rust client because the LZ4 format used by lz4_flex
-        // is not compatible with Celeborn's Java LZ4 format (which includes magic, checksum, etc.)
-        // The Java side will handle compression/decompression.
-        let config = CelebornConfig::builder()
-            .app_id(app_id)
-            .master_endpoints(master_endpoints)
-            .compression_codec(celeborn_client::CompressionCodec::None)
-            .build()
-            .map_err(|e| DataFusionError::External(Box::new(e)))?;
-
-        let client = ExecutorShuffleClient::new(config);
-
-        client
-            .setup_lifecycle_manager_ref(lifecycle_manager_host, lifecycle_manager_port)
-            .await
-            .map_err(|e| DataFusionError::External(Box::new(e)))?;
-
-        let client = Arc::new(client);
-        self.clients.insert(app_id.to_string(), Arc::clone(&client));
-
-        Ok(client)
-    }
-
-    /// Remove a client
-    pub fn remove_client(&self, app_id: &str) {
-        self.clients.remove(app_id);
-    }
-
-    /// Clear all clients
-    pub fn clear(&self) {
-        self.clients.clear();
-    }
-}
-
-impl Default for CelebornClientManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// Re-export ClientManager from celeborn_client for backward compatibility
+pub type CelebornClientManager = ClientManager;
 
 #[cfg(test)]
 mod tests {

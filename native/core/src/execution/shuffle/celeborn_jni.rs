@@ -22,8 +22,7 @@
 
 use crate::errors::{try_unwrap_or_throw, CometError};
 use crate::execution::jni_api::get_runtime;
-use crate::execution::shuffle::celeborn_reader::CelebornClientManager;
-use celeborn_client::ExecutorShuffleClient;
+use celeborn_client::{ClientManager, ExecutorShuffleClient};
 use jni::{
     objects::{JClass, JObject, JObjectArray, JString},
     sys::{jboolean, jint, jlong, JNI_FALSE, JNI_TRUE},
@@ -33,7 +32,7 @@ use once_cell::sync::Lazy;
 use std::sync::Arc;
 
 /// Global Celeborn client manager for reusing connections
-static CELEBORN_CLIENT_MANAGER: Lazy<CelebornClientManager> = Lazy::new(CelebornClientManager::new);
+static CELEBORN_CLIENT_MANAGER: Lazy<ClientManager> = Lazy::new(ClientManager::new);
 
 /// Celeborn shuffle client context stored across JNI calls
 struct CelebornContext {
@@ -87,6 +86,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createCelebornClient(
             CELEBORN_CLIENT_MANAGER
                 .get_or_create_client(&app_id, endpoints, &lm_host, lifecycle_manager_port)
                 .await
+                .map_err(|e| CometError::Internal(format!("Failed to create Celeborn client: {}", e)))
         })?;
 
         // Register shuffle
