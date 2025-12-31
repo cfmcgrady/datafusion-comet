@@ -78,6 +78,7 @@ class CometCelebornIntergrationSuite extends CometTestBase {
 
     // Disable compression since Rust client doesn't support LZ4 compression yet
     conf.set("spark.celeborn.client.shuffle.compression.codec", "zstd")
+    conf.set("spark.comet.shuffle.celeborn.writer.mode", "sort")
 
     conf
   }

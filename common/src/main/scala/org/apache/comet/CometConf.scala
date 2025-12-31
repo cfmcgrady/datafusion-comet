@@ -896,6 +896,41 @@ object CometConf extends ShimCometConf {
       .doc("RPC timeout in milliseconds for Celeborn operations.")
       .longConf
       .createWithDefault(30000L)
+
+  val COMET_SHUFFLE_CELEBORN_WRITER_MODE: ConfigEntry[String] =
+    conf("spark.comet.shuffle.celeborn.writer.mode")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Shuffle writer mode for Celeborn integration. " +
+          "'sort' mode accumulates records in memory, sorts by partition ID, and batches push " +
+          "for better memory efficiency and network performance. " +
+          "'hash' mode pushes data immediately per partition (original behavior). " +
+          "Default is 'sort' for better stability and memory efficiency.")
+      .stringConf
+      .checkValues(Set("sort", "hash"))
+      .createWithDefault("sort")
+
+  val COMET_SHUFFLE_CELEBORN_SORT_MEMORY_THRESHOLD: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.celeborn.sort.memoryThreshold")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Memory threshold in bytes for sort-based shuffle writer. " +
+          "When accumulated data exceeds this threshold, records are sorted by partition ID " +
+          "and pushed to Celeborn. Larger values reduce push frequency but use more memory. " +
+          "Default is 64MB.")
+      .bytesConf(ByteUnit.BYTE)
+      .createWithDefault(64 * 1024 * 1024) // 64MB
+
+  val COMET_SHUFFLE_CELEBORN_SORT_PUSH_BUFFER_SIZE: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.celeborn.sort.pushBufferSize")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Push buffer size in bytes for sort-based shuffle writer. " +
+          "When accumulated data for a partition exceeds this size, it is pushed to Celeborn. " +
+          "Larger values reduce push frequency but use more memory. " +
+          "Default is 4MB.")
+      .bytesConf(ByteUnit.BYTE)
+      .createWithDefault(4 * 1024 * 1024) // 4MB
 }
 
 object ConfigHelpers {

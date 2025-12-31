@@ -43,6 +43,9 @@ struct CelebornContext {
     attempt_id: i32,
     num_mappers: i32,
     num_partitions: i32,
+    writer_mode: String,
+    sort_memory_threshold: i64,
+    push_buffer_size: i64,
 }
 
 /// Parse compression codec from string.
@@ -74,6 +77,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createCelebornClient(
     num_mappers: jint,
     num_partitions: jint,
     compression_codec: JString,
+    writer_mode: JString,
+    sort_memory_threshold: jlong,
+    push_buffer_size: jlong,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         eprintln!("[CELEBORN-JNI] createCelebornClient called");
@@ -81,9 +87,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createCelebornClient(
         let app_id: String = env.get_string(&app_id)?.into();
         let lm_host: String = env.get_string(&lifecycle_manager_host)?.into();
         let codec_str: String = env.get_string(&compression_codec)?.into();
+        let writer_mode_str: String = env.get_string(&writer_mode)?.into();
         let codec = parse_compression_codec(&codec_str);
-        eprintln!("[CELEBORN-JNI] app_id={}, lm_host={}, lm_port={}, compression={:?}",
-            app_id, lm_host, lifecycle_manager_port, codec);
+        eprintln!("[CELEBORN-JNI] app_id={}, lm_host={}, lm_port={}, compression={:?}, writerMode={}, sortMemoryThreshold={}, pushBufferSize={}",
+            app_id, lm_host, lifecycle_manager_port, codec, writer_mode_str, sort_memory_threshold, push_buffer_size);
 
         // Parse master endpoints
         let num_endpoints = env.get_array_length(&master_endpoints)?;
@@ -128,6 +135,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createCelebornClient(
             attempt_id,
             num_mappers,
             num_partitions,
+            writer_mode: writer_mode_str,
+            sort_memory_threshold,
+            push_buffer_size,
         });
 
         Ok(Box::into_raw(context) as jlong)

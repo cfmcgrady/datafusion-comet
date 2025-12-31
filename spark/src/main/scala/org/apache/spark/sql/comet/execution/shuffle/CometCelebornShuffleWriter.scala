@@ -20,17 +20,14 @@
 package org.apache.spark.sql.comet.execution.shuffle
 
 import java.io.ByteArrayOutputStream
-
 import scala.reflect.ClassTag
-
 import org.apache.celeborn.common.CelebornConf
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.serializer.SerializerInstance
 import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
-
-import org.apache.comet.Native
+import org.apache.comet.{CometConf, Native}
 
 /**
  * Comet Celeborn Shuffle Writer that uses Rust ExecutorShuffleClient via JNI.
@@ -108,10 +105,17 @@ class CometCelebornShuffleWriter[K, V](
       // Get compression codec from Celeborn config, default to zstd
       val compressionCodec = celebornConf.shuffleCompressionCodec.name().toLowerCase()
 
+      // Get shuffle writer mode from Comet config
+      val writerMode = CometConf.COMET_SHUFFLE_CELEBORN_WRITER_MODE.get
+      val sortMemoryThreshold = CometConf.COMET_SHUFFLE_CELEBORN_SORT_MEMORY_THRESHOLD.get
+      val sortPushBufferSize = CometConf.COMET_SHUFFLE_CELEBORN_SORT_PUSH_BUFFER_SIZE.get
+
       logInfo(
         s"Creating native Celeborn client for shuffle $shuffleId, " +
           s"map $celebornMapId, attemptId=$attemptId, " +
           s"compression=$compressionCodec, " +
+          s"writerMode=$writerMode, " +
+          s"sortMemoryThreshold=${sortMemoryThreshold / (1024 * 1024)}MB, " +
           s"LM=${handle.lifecycleManagerHost}:${handle.lifecycleManagerPort}")
 
       nativeClientHandle = native.createCelebornClient(
@@ -124,7 +128,10 @@ class CometCelebornShuffleWriter[K, V](
         attemptId,
         numMappers,
         numPartitions,
-        compressionCodec)
+        compressionCodec,
+        writerMode,
+        sortMemoryThreshold,
+        sortPushBufferSize)
 
       logInfo(s"Native Celeborn client created with handle $nativeClientHandle")
     }

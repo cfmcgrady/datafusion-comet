@@ -230,6 +230,12 @@ class Native extends NativeBase {
    *   Total number of partitions
    * @param compressionCodec
    *   The compression codec for Celeborn transport ("none", "lz4", "zstd")
+   * @param writerMode
+   *   The shuffle writer mode ("sort" or "hash")
+   * @param sortMemoryThreshold
+   *   Memory threshold in bytes for sort-based writer (64MB default)
+   * @param pushBufferSize
+   *   Push buffer size in bytes for sort-based writer (4MB default)
    * @return
    *   A handle to the native Celeborn client context
    */
@@ -243,7 +249,10 @@ class Native extends NativeBase {
       attemptId: Int,
       numMappers: Int,
       numPartitions: Int,
-      compressionCodec: String): Long
+      compressionCodec: String,
+      writerMode: String,
+      sortMemoryThreshold: Long,
+      pushBufferSize: Long): Long
 
   /**
    * Push data to Celeborn for a specific partition.
