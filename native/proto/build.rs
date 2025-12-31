@@ -15,27 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Build script for generating codes from .proto files.
+//! Build script - no longer generates code from .proto files.
+//!
+//! Pre-generated Rust code is committed to src/generated/
+//!
+//! If proto files are modified, regenerate using:
+//!   cargo build --manifest-path native/proto/Cargo.toml
+//! with protoc installed, then commit the generated files.
 
-use std::{fs, io::Result, path::Path};
-
-fn main() -> Result<()> {
-    println!("cargo:rerun-if-changed=src/proto/");
-
-    let out_dir = "src/generated";
-    if !Path::new(out_dir).is_dir() {
-        fs::create_dir(out_dir)?;
-    }
-
-    prost_build::Config::new().out_dir(out_dir).compile_protos(
-        &[
-            "src/proto/expr.proto",
-            "src/proto/metric.proto",
-            "src/proto/partitioning.proto",
-            "src/proto/operator.proto",
-            "src/proto/config.proto",
-        ],
-        &["src/proto"],
-    )?;
-    Ok(())
+fn main() {
+    // Proto files are no longer compiled at build time.
+    // Pre-generated Rust code is in src/generated/
 }
