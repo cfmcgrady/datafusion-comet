@@ -525,7 +525,9 @@ object CometShuffleExchangeExec
         s"Comet shuffle is not enabled: ${COMET_EXEC_SHUFFLE_ENABLED.key} is not enabled")
       false
     } else if (!isCometShuffleManagerEnabled(op.conf)) {
-      withInfo(op, s"spark.shuffle.manager is not set to ${classOf[CometShuffleManager].getName}")
+      withInfo(
+        op,
+        s"spark.shuffle.manager is not set to CometShuffleManager or CometCelebornShuffleManager")
       false
     } else {
       true

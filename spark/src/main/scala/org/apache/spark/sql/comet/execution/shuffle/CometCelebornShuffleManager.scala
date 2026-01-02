@@ -28,6 +28,9 @@ import org.apache.spark.{ShuffleDependency, SparkConf, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.shuffle._
 import org.apache.spark.shuffle.sort.SortShuffleManager
+import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.plans.physical.Partitioning
+import org.apache.spark.sql.execution.metric.SQLMetric
 
 import org.apache.comet.CometConf
 
@@ -184,17 +187,61 @@ class CometCelebornShuffleManager(conf: SparkConf, isDriver: Boolean)
     val numPartitions = dependency.partitioner.numPartitions
 
     if (shouldUseCelebornShuffle(numPartitions)) {
-      logInfo(s"Registering Celeborn shuffle $shuffleId with $numPartitions partitions")
+      dependency match {
+        case cometDep: CometShuffleDependency[_, _, _] =>
+          cometDep.shuffleType match {
+            case CometNativeShuffle =>
+              logInfo(s"Registering Celeborn native shuffle $shuffleId with $numPartitions partitions")
+              // Create native shuffle handle for ColumnarBatch
+              new CometCelebornNativeShuffleHandle[K, V, C](
+                appUniqueId = appUniqueId,
+                lifecycleManagerHost = lifecycleManager.getHost,
+                lifecycleManagerPort = lifecycleManager.getPort,
+                userIdentifier = lifecycleManager.getUserIdentifier,
+                shuffleId = shuffleId,
+                numMappers = dependency.rdd.getNumPartitions,
+                dependency = dependency,
+                outputPartitioning = cometDep.outputPartitioning.get,
+                outputAttributes = cometDep.outputAttributes,
+                shuffleWriteMetrics = cometDep.shuffleWriteMetrics,
+                numParts = cometDep.numParts)
 
-      // Create CometCelebornShuffleHandle with LifecycleManager address
-      new CometCelebornShuffleHandle[K, V, C](
-        appUniqueId = appUniqueId,
-        lifecycleManagerHost = lifecycleManager.getHost,
-        lifecycleManagerPort = lifecycleManager.getPort,
-        userIdentifier = lifecycleManager.getUserIdentifier,
-        shuffleId = shuffleId,
-        numMappers = dependency.rdd.getNumPartitions,
-        dependency = dependency)
+            case CometColumnarShuffle =>
+              logInfo(s"Registering Celeborn columnar shuffle $shuffleId with $numPartitions partitions")
+              // Use row-based shuffle for CometColumnarShuffle
+              new CometCelebornShuffleHandle[K, V, C](
+                appUniqueId = appUniqueId,
+                lifecycleManagerHost = lifecycleManager.getHost,
+                lifecycleManagerPort = lifecycleManager.getPort,
+                userIdentifier = lifecycleManager.getUserIdentifier,
+                shuffleId = shuffleId,
+                numMappers = dependency.rdd.getNumPartitions,
+                dependency = dependency)
+
+            case _ =>
+              logWarning(s"Unknown Comet shuffle type, falling back to row-based shuffle")
+              new CometCelebornShuffleHandle[K, V, C](
+                appUniqueId = appUniqueId,
+                lifecycleManagerHost = lifecycleManager.getHost,
+                lifecycleManagerPort = lifecycleManager.getPort,
+                userIdentifier = lifecycleManager.getUserIdentifier,
+                shuffleId = shuffleId,
+                numMappers = dependency.rdd.getNumPartitions,
+                dependency = dependency)
+          }
+
+        case _ =>
+          logInfo(s"Registering Celeborn shuffle $shuffleId with $numPartitions partitions (non-Comet)")
+          // Non-Comet shuffle dependency, use row-based shuffle
+          new CometCelebornShuffleHandle[K, V, C](
+            appUniqueId = appUniqueId,
+            lifecycleManagerHost = lifecycleManager.getHost,
+            lifecycleManagerPort = lifecycleManager.getPort,
+            userIdentifier = lifecycleManager.getUserIdentifier,
+            shuffleId = shuffleId,
+            numMappers = dependency.rdd.getNumPartitions,
+            dependency = dependency)
+      }
     } else {
       logInfo(s"Falling back to SortShuffleManager for shuffle $shuffleId")
       sortShuffleIds.add(shuffleId)
@@ -209,8 +256,17 @@ class CometCelebornShuffleManager(conf: SparkConf, isDriver: Boolean)
       metrics: ShuffleWriteMetricsReporter): ShuffleWriter[K, V] = {
 
     handle match {
+      case h: CometCelebornNativeShuffleHandle[K @unchecked, V @unchecked, _] =>
+        // Create native Celeborn shuffle writer for ColumnarBatch
+        new CometNativeCelebornShuffleWriter[K, V](
+          handle = h,
+          mapId = mapId,
+          context = context,
+          celebornConf = celebornConf,
+          metricsReporter = metrics)
+
       case h: CometCelebornShuffleHandle[K @unchecked, V @unchecked, _] =>
-        // Create Comet Celeborn shuffle writer using native Rust client
+        // Create row-based Celeborn shuffle writer
         new CometCelebornShuffleWriter[K, V](
           handle = h,
           mapId = mapId.toInt,
@@ -233,23 +289,23 @@ class CometCelebornShuffleManager(conf: SparkConf, isDriver: Boolean)
       metrics: ShuffleReadMetricsReporter): ShuffleReader[K, C] = {
 
     handle match {
-      case h: CometCelebornShuffleHandle[K @unchecked, _, C @unchecked] =>
-        // Get or create ShuffleClient for this executor
-        if (shuffleClient == null) {
-          synchronized {
-            if (shuffleClient == null) {
-              shuffleClient = ShuffleClient.get(
-                h.appUniqueId,
-                h.lifecycleManagerHost,
-                h.lifecycleManagerPort,
-                celebornConf,
-                h.userIdentifier,
-                null // extension
-              )
-            }
-          }
-        }
+      case h: CometCelebornNativeShuffleHandle[K @unchecked, _, C @unchecked] =>
+        // Native shuffle handle - use native Celeborn reader with Arrow format
+        ensureShuffleClient(h.appUniqueId, h.lifecycleManagerHost, h.lifecycleManagerPort, h.userIdentifier)
+        new CometNativeCelebornShuffleReader[K, C](
+          handle = h,
+          startMapIndex = startMapIndex,
+          endMapIndex = endMapIndex,
+          startPartition = startPartition,
+          endPartition = endPartition,
+          context = context,
+          celebornConf = celebornConf,
+          shuffleClient = shuffleClient,
+          metrics = metrics)
 
+      case h: CometCelebornShuffleHandle[K @unchecked, _, C @unchecked] =>
+        // Row-based shuffle handle
+        ensureShuffleClient(h.appUniqueId, h.lifecycleManagerHost, h.lifecycleManagerPort, h.userIdentifier)
         new CometCelebornShuffleReader[K, C](
           handle = h,
           startMapIndex = startMapIndex,
@@ -270,6 +326,27 @@ class CometCelebornShuffleManager(conf: SparkConf, isDriver: Boolean)
           endPartition,
           context,
           metrics)
+    }
+  }
+
+  private def ensureShuffleClient(
+      appUniqueId: String,
+      lifecycleManagerHost: String,
+      lifecycleManagerPort: Int,
+      userIdentifier: UserIdentifier): Unit = {
+    if (shuffleClient == null) {
+      synchronized {
+        if (shuffleClient == null) {
+          shuffleClient = ShuffleClient.get(
+            appUniqueId,
+            lifecycleManagerHost,
+            lifecycleManagerPort,
+            celebornConf,
+            userIdentifier,
+            null // extension
+          )
+        }
+      }
     }
   }
 
@@ -315,8 +392,8 @@ class CometCelebornShuffleManager(conf: SparkConf, isDriver: Boolean)
 }
 
 /**
- * Shuffle handle for Comet Celeborn shuffle. Contains LifecycleManager address for Executor to
- * connect.
+ * Shuffle handle for Comet Celeborn row-based shuffle. Contains LifecycleManager address for
+ * Executor to connect.
  */
 class CometCelebornShuffleHandle[K, V, C](
     val appUniqueId: String,
@@ -326,6 +403,27 @@ class CometCelebornShuffleHandle[K, V, C](
     shuffleId: Int,
     val numMappers: Int,
     dependency: ShuffleDependency[K, V, C])
+    extends BaseShuffleHandle[K, V, C](shuffleId, dependency) {
+
+  def numPartitions: Int = dependency.partitioner.numPartitions
+}
+
+/**
+ * Shuffle handle for Comet Celeborn native shuffle (ColumnarBatch). Contains LifecycleManager
+ * address and native execution metadata.
+ */
+class CometCelebornNativeShuffleHandle[K, V, C](
+    val appUniqueId: String,
+    val lifecycleManagerHost: String,
+    val lifecycleManagerPort: Int,
+    val userIdentifier: UserIdentifier,
+    shuffleId: Int,
+    val numMappers: Int,
+    dependency: ShuffleDependency[K, V, C],
+    val outputPartitioning: Partitioning,
+    val outputAttributes: Seq[Attribute],
+    val shuffleWriteMetrics: Map[String, SQLMetric],
+    val numParts: Int)
     extends BaseShuffleHandle[K, V, C](shuffleId, dependency) {
 
   def numPartitions: Int = dependency.partitioner.numPartitions

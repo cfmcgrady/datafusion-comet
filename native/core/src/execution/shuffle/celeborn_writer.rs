@@ -513,6 +513,10 @@ impl CelebornShuffleRepartitioner {
         self.metrics.baseline.record_output(input.num_rows());
 
         match &self.partitioning {
+            CometPartitioning::SinglePartition => {
+                // For SinglePartition, all data goes to partition 0
+                self.push_single_partition_data(&input).await?;
+            }
             CometPartitioning::Hash(exprs, num_output_partitions) => {
                 let mut scratch = std::mem::take(&mut self.scratch);
                 let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
@@ -562,6 +566,55 @@ impl CelebornShuffleRepartitioner {
                 )));
             }
         }
+        Ok(())
+    }
+
+    /// Push data for SinglePartition - all data goes to partition 0
+    async fn push_single_partition_data(&mut self, input: &RecordBatch) -> Result<()> {
+        // Encode batch to IPC format
+        let mut buffer = Vec::new();
+        let mut cursor = Cursor::new(&mut buffer);
+        self.shuffle_block_writer
+            .write_batch(input, &mut cursor, &self.metrics.encode_time)?;
+
+        match self.writer_mode {
+            ShuffleWriterMode::Hash => {
+                // Push directly to partition 0
+                let mut push_timer = self.metrics.push_time.timer();
+                self.client
+                    .push_data(
+                        self.shuffle_id,
+                        self.map_id,
+                        self.attempt_id,
+                        0, // partition 0
+                        &buffer,
+                    )
+                    .await
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                push_timer.stop();
+                self.metrics.bytes_pushed.add(buffer.len());
+            }
+            ShuffleWriterMode::Sort => {
+                let sort_pusher = self
+                    .sort_pusher
+                    .as_mut()
+                    .ok_or_else(|| DataFusionError::Internal("Sort pusher not initialized".to_string()))?;
+
+                // Insert into sort pusher for partition 0
+                sort_pusher.insert_record(0, &buffer)
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+                // Check if we need to trigger a push
+                if sort_pusher.needs_push() {
+                    let mut push_timer = self.metrics.push_time.timer();
+                    let bytes_freed = sort_pusher.push_data().await
+                        .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                    push_timer.stop();
+                    self.metrics.bytes_pushed.add(bytes_freed);
+                }
+            }
+        }
+
         Ok(())
     }
 

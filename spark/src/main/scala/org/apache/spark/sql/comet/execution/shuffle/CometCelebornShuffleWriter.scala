@@ -20,13 +20,17 @@
 package org.apache.spark.sql.comet.execution.shuffle
 
 import java.io.ByteArrayOutputStream
+
 import scala.reflect.ClassTag
+
 import org.apache.celeborn.common.CelebornConf
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.serializer.SerializerInstance
 import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
+import org.apache.spark.sql.internal.SQLConf
+
 import org.apache.comet.{CometConf, Native}
 
 /**

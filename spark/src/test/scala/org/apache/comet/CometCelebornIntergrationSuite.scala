@@ -21,6 +21,7 @@ package org.apache.comet
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.functions._
 
 class CometCelebornIntergrationSuite extends CometTestBase {
   test("simple select") {
@@ -54,6 +55,13 @@ class CometCelebornIntergrationSuite extends CometTestBase {
     assert(resultMap(2) == 1, s"Expected count 1 for value 2, got ${resultMap(2)}")
   }
 
+  test("aa") {
+    val count = spark.range(0, 1600, 1, 8)
+      .select(Seq(col("id"), hash(col("id")).cast("string").as("rid")): _*)
+      .repartition(8, Seq(col("id"), col("rid")): _*).count()
+    assert(count == 1600, s"Expected count 1600, got $count")
+  }
+
   override def sparkConf: SparkConf = {
     val conf = super.sparkConf
     // Set the Celeborn shuffle manager
@@ -79,6 +87,8 @@ class CometCelebornIntergrationSuite extends CometTestBase {
     // Disable compression since Rust client doesn't support LZ4 compression yet
     conf.set("spark.celeborn.client.shuffle.compression.codec", "zstd")
     conf.set("spark.comet.shuffle.celeborn.writer.mode", "sort")
+
+//    conf.set("spark.ui.enabled", "true")
 
     conf
   }
