@@ -231,14 +231,21 @@ class Native extends NativeBase {
    * @param compressionCodec
    *   The compression codec for Celeborn transport ("none", "lz4", "zstd")
    * @param writerMode
-   *   The shuffle writer mode ("sort" or "hash")
+   *   The shuffle writer mode ("async_sort", "sort" or "hash")
    * @param sortMemoryThreshold
    *   Memory threshold in bytes for sort-based writer (64MB default)
    * @param pushBufferSize
    *   Push buffer size in bytes for sort-based writer (4MB default)
+   * @param asyncPushNumWorkers
+   *   Number of async push worker threads (4 default)
+   * @param asyncPushQueueCapacity
+   *   Capacity of async push task queue (1000 default)
+   * @param asyncPushMaxInFlightPerWorker
+   *   Max in-flight requests per Celeborn worker (32 default)
    * @return
    *   A handle to the native Celeborn client context
    */
+  // scalastyle:off argcount
   @native def createCelebornClient(
       appId: String,
       masterEndpoints: Array[String],
@@ -252,7 +259,11 @@ class Native extends NativeBase {
       compressionCodec: String,
       writerMode: String,
       sortMemoryThreshold: Long,
-      pushBufferSize: Long): Long
+      pushBufferSize: Long,
+      asyncPushNumWorkers: Int,
+      asyncPushQueueCapacity: Int,
+      asyncPushMaxInFlightPerWorker: Int): Long
+  // scalastyle:on argcount
 
   /**
    * Push data to Celeborn for a specific partition.

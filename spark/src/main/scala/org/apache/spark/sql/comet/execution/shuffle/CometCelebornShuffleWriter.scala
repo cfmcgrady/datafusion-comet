@@ -114,12 +114,19 @@ class CometCelebornShuffleWriter[K, V](
       val sortMemoryThreshold = CometConf.COMET_SHUFFLE_CELEBORN_SORT_MEMORY_THRESHOLD.get
       val sortPushBufferSize = CometConf.COMET_SHUFFLE_CELEBORN_SORT_PUSH_BUFFER_SIZE.get
 
+      // Get async push configurations
+      val asyncPushNumWorkers = CometConf.COMET_SHUFFLE_CELEBORN_ASYNC_PUSH_NUM_WORKERS.get
+      val asyncPushQueueCapacity = CometConf.COMET_SHUFFLE_CELEBORN_ASYNC_PUSH_QUEUE_CAPACITY.get
+      val asyncPushMaxInFlightPerWorker =
+        CometConf.COMET_SHUFFLE_CELEBORN_ASYNC_PUSH_MAX_IN_FLIGHT_PER_WORKER.get
+
       logInfo(
         s"Creating native Celeborn client for shuffle $shuffleId, " +
           s"map $celebornMapId, attemptId=$attemptId, " +
           s"compression=$compressionCodec, " +
           s"writerMode=$writerMode, " +
           s"sortMemoryThreshold=${sortMemoryThreshold / (1024 * 1024)}MB, " +
+          s"asyncPushWorkers=$asyncPushNumWorkers, " +
           s"LM=${handle.lifecycleManagerHost}:${handle.lifecycleManagerPort}")
 
       nativeClientHandle = native.createCelebornClient(
@@ -135,7 +142,10 @@ class CometCelebornShuffleWriter[K, V](
         compressionCodec,
         writerMode,
         sortMemoryThreshold,
-        sortPushBufferSize)
+        sortPushBufferSize,
+        asyncPushNumWorkers,
+        asyncPushQueueCapacity,
+        asyncPushMaxInFlightPerWorker)
 
       logInfo(s"Native Celeborn client created with handle $nativeClientHandle")
     }

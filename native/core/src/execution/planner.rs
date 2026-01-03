@@ -1274,6 +1274,13 @@ impl PhysicalPlanner {
                     num_partitions: writer.num_partitions,
                     lifecycle_manager_host: writer.lifecycle_manager_host.clone(),
                     lifecycle_manager_port: writer.lifecycle_manager_port,
+                    writer_mode: CelebornShuffleConfig::parse_writer_mode(&writer.writer_mode),
+                    sort_memory_threshold: writer.sort_memory_threshold as usize,
+                    push_buffer_max_size: writer.push_buffer_size as usize,
+                    async_push_num_workers: writer.async_push_num_workers as usize,
+                    async_push_queue_capacity: writer.async_push_queue_capacity as usize,
+                    async_push_max_in_flight_per_worker: writer
+                        .async_push_max_in_flight_per_worker as usize,
                     // Use Zstd compression for Celeborn transport by default
                     ..Default::default()
                 };

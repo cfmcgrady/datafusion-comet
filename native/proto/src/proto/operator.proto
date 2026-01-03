@@ -264,6 +264,18 @@ message CelebornShuffleWriter {
   string lifecycle_manager_host = 12;
   // LifecycleManager port
   int32 lifecycle_manager_port = 13;
+  // Writer mode: "async_sort", "sort", or "hash"
+  string writer_mode = 14;
+  // Memory threshold for sort-based writer (bytes)
+  int64 sort_memory_threshold = 15;
+  // Push buffer size for sort-based writer (bytes)
+  int64 push_buffer_size = 16;
+  // Number of async push worker threads
+  int32 async_push_num_workers = 17;
+  // Capacity of async push task queue
+  int32 async_push_queue_capacity = 18;
+  // Max in-flight requests per Celeborn worker
+  int32 async_push_max_in_flight_per_worker = 19;
 }
 
 message CelebornShuffleReader {

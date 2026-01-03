@@ -208,6 +208,22 @@ class CometNativeCelebornShuffleWriter[K, V](
     shuffleWriterBuilder.setLifecycleManagerHost(handle.lifecycleManagerHost)
     shuffleWriterBuilder.setLifecycleManagerPort(handle.lifecycleManagerPort)
 
+    // Set writer mode and async push configurations
+    val writerMode = CometConf.COMET_SHUFFLE_CELEBORN_WRITER_MODE.get
+    val sortMemoryThreshold = CometConf.COMET_SHUFFLE_CELEBORN_SORT_MEMORY_THRESHOLD.get
+    val pushBufferSize = CometConf.COMET_SHUFFLE_CELEBORN_SORT_PUSH_BUFFER_SIZE.get
+    val asyncNumWorkers = CometConf.COMET_SHUFFLE_CELEBORN_ASYNC_PUSH_NUM_WORKERS.get
+    val asyncQueueCapacity = CometConf.COMET_SHUFFLE_CELEBORN_ASYNC_PUSH_QUEUE_CAPACITY.get
+    val asyncMaxInFlight =
+      CometConf.COMET_SHUFFLE_CELEBORN_ASYNC_PUSH_MAX_IN_FLIGHT_PER_WORKER.get
+
+    shuffleWriterBuilder.setWriterMode(writerMode)
+    shuffleWriterBuilder.setSortMemoryThreshold(sortMemoryThreshold)
+    shuffleWriterBuilder.setPushBufferSize(pushBufferSize)
+    shuffleWriterBuilder.setAsyncPushNumWorkers(asyncNumWorkers)
+    shuffleWriterBuilder.setAsyncPushQueueCapacity(asyncQueueCapacity)
+    shuffleWriterBuilder.setAsyncPushMaxInFlightPerWorker(asyncMaxInFlight)
+
     val shuffleWriterOpBuilder = OperatorOuterClass.Operator.newBuilder()
     shuffleWriterOpBuilder.setCelebornShuffleWriter(shuffleWriterBuilder.build())
     shuffleWriterOpBuilder.addChildren(scanOpBuilder.build())

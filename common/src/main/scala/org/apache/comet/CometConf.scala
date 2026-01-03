@@ -902,13 +902,13 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_SHUFFLE)
       .doc(
         "Shuffle writer mode for Celeborn integration. " +
-          "'sort' mode accumulates records in memory, sorts by partition ID, and batches push " +
-          "for better memory efficiency and network performance. " +
-          "'hash' mode pushes data immediately per partition (original behavior). " +
-          "Default is 'sort' for better stability and memory efficiency.")
+          "'async_sort' uses async push with background workers for best performance. " +
+          "'sort' accumulates records, sorts by partition ID, and batches push. " +
+          "'hash' pushes data immediately per partition (original behavior). " +
+          "Default is 'async_sort'.")
       .stringConf
-      .checkValues(Set("sort", "hash"))
-      .createWithDefault("sort")
+      .checkValues(Set("async_sort", "sort", "hash"))
+      .createWithDefault("async_sort")
 
   val COMET_SHUFFLE_CELEBORN_SORT_MEMORY_THRESHOLD: ConfigEntry[Long] =
     conf("spark.comet.shuffle.celeborn.sort.memoryThreshold")
@@ -931,6 +931,51 @@ object CometConf extends ShimCometConf {
           "Default is 4MB.")
       .bytesConf(ByteUnit.BYTE)
       .createWithDefault(4 * 1024 * 1024) // 4MB
+
+  // Async push configurations for Celeborn
+  val COMET_SHUFFLE_CELEBORN_ASYNC_PUSH_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.celeborn.async.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Whether to enable asynchronous push for Celeborn shuffle. " +
+          "When enabled, data is pushed to Celeborn workers asynchronously using background " +
+          "worker threads, which can significantly improve performance for large shuffles. " +
+          "This is automatically enabled when writer.mode is 'async_sort'.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_SHUFFLE_CELEBORN_ASYNC_PUSH_NUM_WORKERS: ConfigEntry[Int] =
+    conf("spark.comet.shuffle.celeborn.async.numWorkers")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Number of background worker threads for asynchronous push to Celeborn. " +
+          "More workers can improve throughput but use more resources. " +
+          "Default is 4.")
+      .intConf
+      .checkValue(v => v > 0, "Number of async push workers must be positive")
+      .createWithDefault(4)
+
+  val COMET_SHUFFLE_CELEBORN_ASYNC_PUSH_QUEUE_CAPACITY: ConfigEntry[Int] =
+    conf("spark.comet.shuffle.celeborn.async.queueCapacity")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Capacity of the task queue for asynchronous push. " +
+          "When the queue is full, the producer will block until space is available, " +
+          "providing natural backpressure. Default is 1000.")
+      .intConf
+      .checkValue(v => v > 0, "Queue capacity must be positive")
+      .createWithDefault(1000)
+
+  val COMET_SHUFFLE_CELEBORN_ASYNC_PUSH_MAX_IN_FLIGHT_PER_WORKER: ConfigEntry[Int] =
+    conf("spark.comet.shuffle.celeborn.async.maxInFlightPerWorker")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Maximum number of in-flight push requests per Celeborn worker. " +
+          "This limits concurrent requests to each worker to prevent overwhelming it. " +
+          "Default is 32.")
+      .intConf
+      .checkValue(v => v > 0, "Max in-flight per worker must be positive")
+      .createWithDefault(32)
 }
 
 object ConfigHelpers {

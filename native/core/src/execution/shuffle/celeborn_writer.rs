@@ -33,8 +33,10 @@ use celeborn_client::{
     CompressionCodec as CelebornCompressionCodec,
     // Re-use repartitioner utilities from celeborn_client
     ScratchSpace, map_partition_ids_to_starts_and_indices, pmod,
-    // Sort-based pusher for memory-efficient shuffle
+    // Sort-based pusher for memory-efficient shuffle (sync version)
     SortBasedPusher, SortBasedPusherConfig,
+    // Async sort-based pusher for high-performance async push
+    AsyncSortBasedPusher, AsyncSortBasedPusherConfig,
 };
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -72,15 +74,17 @@ use celeborn_client::CelebornError;
 /// Shuffle writer mode for Celeborn
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShuffleWriterMode {
-    /// Hash-based writer: immediate push per partition
+    /// Hash-based writer: immediate push per partition (sync)
     Hash,
-    /// Sort-based writer: accumulate and batch push
+    /// Sort-based writer: accumulate and batch push (sync)
     Sort,
+    /// Async sort-based writer: accumulate and async batch push (high performance)
+    AsyncSort,
 }
 
 impl Default for ShuffleWriterMode {
     fn default() -> Self {
-        ShuffleWriterMode::Sort // Default to Sort for better stability
+        ShuffleWriterMode::AsyncSort // Default to AsyncSort for best performance
     }
 }
 
@@ -107,12 +111,18 @@ pub struct CelebornShuffleConfig {
     pub lifecycle_manager_port: i32,
     /// Celeborn transport compression codec (None, Lz4, Zstd)
     pub celeborn_compression: CelebornCompressionCodec,
-    /// Shuffle writer mode (Hash or Sort)
+    /// Shuffle writer mode (Hash, Sort, or AsyncSort)
     pub writer_mode: ShuffleWriterMode,
     /// Memory threshold for sort-based writer (default: 64MB)
     pub sort_memory_threshold: usize,
     /// Push buffer max size for sort-based writer (default: 4MB)
     pub push_buffer_max_size: usize,
+    /// Number of async push worker threads (default: 4)
+    pub async_push_num_workers: usize,
+    /// Capacity of async push task queue (default: 1000)
+    pub async_push_queue_capacity: usize,
+    /// Max in-flight requests per Celeborn worker (default: 32)
+    pub async_push_max_in_flight_per_worker: usize,
 }
 
 impl Default for CelebornShuffleConfig {
@@ -129,12 +139,28 @@ impl Default for CelebornShuffleConfig {
             lifecycle_manager_port: 0,
             // Default to Zstd compression for better compression ratio
             celeborn_compression: CelebornCompressionCodec::Zstd,
-            // Default to Sort mode for better memory efficiency
-            writer_mode: ShuffleWriterMode::Sort,
+            // Default to AsyncSort mode for best performance
+            writer_mode: ShuffleWriterMode::AsyncSort,
             // 64MB memory threshold for sort-based writer
             sort_memory_threshold: 64 * 1024 * 1024,
             // 4MB push buffer size
             push_buffer_max_size: 4 * 1024 * 1024,
+            // Async push configurations
+            async_push_num_workers: 4,
+            async_push_queue_capacity: 1000,
+            async_push_max_in_flight_per_worker: 32,
+        }
+    }
+}
+
+impl CelebornShuffleConfig {
+    /// Parse writer mode from string configuration
+    pub fn parse_writer_mode(mode: &str) -> ShuffleWriterMode {
+        match mode.to_lowercase().as_str() {
+            "async_sort" => ShuffleWriterMode::AsyncSort,
+            "sort" => ShuffleWriterMode::Sort,
+            "hash" => ShuffleWriterMode::Hash,
+            _ => ShuffleWriterMode::AsyncSort, // Default to AsyncSort
         }
     }
 }
@@ -377,12 +403,14 @@ struct CelebornShuffleRepartitioner {
     reservation: MemoryReservation,
     /// Whether tracing is enabled
     tracing_enabled: bool,
-    /// Writer mode (Hash or Sort)
+    /// Writer mode (Hash, Sort, or AsyncSort)
     writer_mode: ShuffleWriterMode,
     /// Hash-based writer: buffer size threshold for pushing to Celeborn
     push_buffer_size: usize,
-    /// Sort-based writer
+    /// Sort-based writer (sync)
     sort_pusher: Option<SortBasedPusher>,
+    /// Async sort-based writer (high performance)
+    async_sort_pusher: Option<AsyncSortBasedPusher>,
 }
 
 
@@ -462,6 +490,26 @@ impl CelebornShuffleRepartitioner {
             None
         };
 
+        // Initialize async sort-based pusher if needed (high performance mode)
+        let async_sort_pusher = if config.writer_mode == ShuffleWriterMode::AsyncSort {
+            let async_config = AsyncSortBasedPusherConfig {
+                shuffle_id: config.shuffle_id,
+                map_id: config.map_id,
+                attempt_id: config.attempt_id,
+                num_mappers: config.num_mappers,
+                num_partitions: config.num_partitions as usize,
+                sort_memory_threshold: config.sort_memory_threshold,
+                push_buffer_max_size: config.push_buffer_max_size,
+                // Use reasonable defaults for async pusher
+                queue_capacity: 512,
+                max_in_flight_per_worker: 32,
+                num_push_workers: 4,
+            };
+            Some(AsyncSortBasedPusher::new(Arc::clone(&client_arc), async_config))
+        } else {
+            None
+        };
+
         Ok(Self {
             client: client_arc,
             shuffle_id: config.shuffle_id,
@@ -479,6 +527,7 @@ impl CelebornShuffleRepartitioner {
             writer_mode: config.writer_mode,
             push_buffer_size: config.push_buffer_max_size,
             sort_pusher,
+            async_sort_pusher,
         })
     }
 
@@ -613,6 +662,25 @@ impl CelebornShuffleRepartitioner {
                     self.metrics.bytes_pushed.add(bytes_freed);
                 }
             }
+            ShuffleWriterMode::AsyncSort => {
+                let async_pusher = self
+                    .async_sort_pusher
+                    .as_mut()
+                    .ok_or_else(|| DataFusionError::Internal("Async sort pusher not initialized".to_string()))?;
+
+                // Insert into async sort pusher for partition 0
+                async_pusher.insert_record(0, &buffer)
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+                // Check if we need to trigger an async push (non-blocking)
+                if async_pusher.needs_push() {
+                    let mut push_timer = self.metrics.push_time.timer();
+                    let bytes_freed = async_pusher.push_data().await
+                        .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                    push_timer.stop();
+                    self.metrics.bytes_pushed.add(bytes_freed);
+                }
+            }
         }
 
         Ok(())
@@ -632,6 +700,10 @@ impl CelebornShuffleRepartitioner {
             }
             ShuffleWriterMode::Sort => {
                 self.push_partitioned_data_sort(input, partition_row_indices, partition_starts)
+                    .await
+            }
+            ShuffleWriterMode::AsyncSort => {
+                self.push_partitioned_data_async_sort(input, partition_row_indices, partition_starts)
                     .await
             }
         }
@@ -743,17 +815,78 @@ impl CelebornShuffleRepartitioner {
         Ok(())
     }
 
+    /// Async sort-based push: accumulate and async batch push (high performance)
+    async fn push_partitioned_data_async_sort(
+        &mut self,
+        input: &RecordBatch,
+        partition_row_indices: &[u32],
+        partition_starts: &[u32],
+    ) -> Result<()> {
+        let async_pusher = self
+            .async_sort_pusher
+            .as_mut()
+            .ok_or_else(|| DataFusionError::Internal("Async sort pusher not initialized".to_string()))?;
+
+        for (partition_id, (&start, &end)) in partition_starts
+            .iter()
+            .tuple_windows()
+            .enumerate()
+            .filter(|(_, (start, end))| start < end)
+        {
+            let row_indices = &partition_row_indices[start as usize..end as usize];
+
+            // Create indices for interleave
+            let indices: Vec<(usize, usize)> = row_indices
+                .iter()
+                .map(|&idx| (0usize, idx as usize))
+                .collect();
+
+            // Extract rows for this partition
+            let partition_batch = interleave_record_batch(&[input], &indices)?;
+
+            // Encode batch to IPC format
+            let mut buffer = Vec::new();
+            let mut cursor = Cursor::new(&mut buffer);
+            self.shuffle_block_writer
+                .write_batch(&partition_batch, &mut cursor, &self.metrics.encode_time)?;
+
+            // Insert into async sort pusher (non-blocking accumulation)
+            async_pusher.insert_record(partition_id as u32, &buffer)
+                .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+            // Check if we need to trigger an async push (queues tasks, doesn't block)
+            if async_pusher.needs_push() {
+                let mut push_timer = self.metrics.push_time.timer();
+                let bytes_freed = async_pusher.push_data().await
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                push_timer.stop();
+                self.metrics.bytes_pushed.add(bytes_freed);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Finish the shuffle and signal mapper end
     pub async fn finish(&mut self) -> Result<()> {
         with_trace_async("celeborn_finish", self.tracing_enabled, || async {
-            // For sort-based mode, flush remaining data
+            // Handle different writer modes
             if let Some(sort_pusher) = self.sort_pusher.as_mut() {
+                // Sync sort-based mode: flush remaining data
                 let mut push_timer = self.metrics.push_time.timer();
                 sort_pusher.finish().await
                     .map_err(|e| DataFusionError::External(Box::new(e)))?;
                 push_timer.stop();
+            } else if let Some(async_pusher) = self.async_sort_pusher.as_mut() {
+                // Async sort-based mode: flush remaining data and wait for all async pushes
+                let mut push_timer = self.metrics.push_time.timer();
+                async_pusher.finish().await
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+                push_timer.stop();
+                // Update metrics with actual bytes pushed
+                self.metrics.bytes_pushed.add(async_pusher.bytes_pushed());
             } else {
-                // For hash-based mode, signal mapper end directly
+                // Hash-based mode: signal mapper end directly
                 self.client
                     .mapper_end(
                         self.shuffle_id,

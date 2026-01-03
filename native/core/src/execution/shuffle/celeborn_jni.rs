@@ -46,6 +46,10 @@ struct CelebornContext {
     writer_mode: String,
     sort_memory_threshold: i64,
     push_buffer_size: i64,
+    // Async push configurations
+    async_push_num_workers: i32,
+    async_push_queue_capacity: i32,
+    async_push_max_in_flight_per_worker: i32,
 }
 
 /// Parse compression codec from string.
@@ -80,6 +84,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createCelebornClient(
     writer_mode: JString,
     sort_memory_threshold: jlong,
     push_buffer_size: jlong,
+    async_push_num_workers: jint,
+    async_push_queue_capacity: jint,
+    async_push_max_in_flight_per_worker: jint,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         eprintln!("[CELEBORN-JNI] createCelebornClient called");
@@ -89,8 +96,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createCelebornClient(
         let codec_str: String = env.get_string(&compression_codec)?.into();
         let writer_mode_str: String = env.get_string(&writer_mode)?.into();
         let codec = parse_compression_codec(&codec_str);
-        eprintln!("[CELEBORN-JNI] app_id={}, lm_host={}, lm_port={}, compression={:?}, writerMode={}, sortMemoryThreshold={}, pushBufferSize={}",
-            app_id, lm_host, lifecycle_manager_port, codec, writer_mode_str, sort_memory_threshold, push_buffer_size);
+        eprintln!("[CELEBORN-JNI] app_id={}, lm_host={}, lm_port={}, compression={:?}, writerMode={}, sortMemoryThreshold={}, pushBufferSize={}, asyncWorkers={}, asyncQueueCap={}, asyncMaxInFlight={}",
+            app_id, lm_host, lifecycle_manager_port, codec, writer_mode_str, sort_memory_threshold, push_buffer_size,
+            async_push_num_workers, async_push_queue_capacity, async_push_max_in_flight_per_worker);
 
         // Parse master endpoints
         let num_endpoints = env.get_array_length(&master_endpoints)?;
@@ -138,6 +146,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createCelebornClient(
             writer_mode: writer_mode_str,
             sort_memory_threshold,
             push_buffer_size,
+            async_push_num_workers,
+            async_push_queue_capacity,
+            async_push_max_in_flight_per_worker,
         });
 
         Ok(Box::into_raw(context) as jlong)
