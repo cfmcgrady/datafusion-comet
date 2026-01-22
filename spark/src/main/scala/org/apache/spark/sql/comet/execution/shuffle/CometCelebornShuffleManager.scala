@@ -106,6 +106,8 @@ class CometCelebornShuffleManager(conf: SparkConf, isDriver: Boolean)
   // Application unique ID
   @volatile private var appUniqueId: String = _
 
+  def getAppUniqueId: String = appUniqueId
+
   // Fallback to SortShuffleManager for unsupported cases
   @volatile private var sortShuffleManager: SortShuffleManager = _
 

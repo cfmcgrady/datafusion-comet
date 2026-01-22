@@ -350,6 +350,7 @@ async fn celeborn_shuffle(
     with_trace_async("celeborn_shuffle", tracing_enabled, || async {
         let schema = input.schema();
 
+        let shuffle_id = celeborn_config.shuffle_id;
         let mut repartitioner = CelebornShuffleRepartitioner::try_new(
             partition,
             Arc::clone(&schema),
@@ -363,9 +364,11 @@ async fn celeborn_shuffle(
         )
         .await?;
 
+        eprintln!("[CELEBORN-DEBUG] Starting insert_batch loop for shuffle {}, partition {}", shuffle_id, partition);
         while let Some(batch) = input.next().await {
             repartitioner.insert_batch(batch?).await?;
         }
+        eprintln!("[CELEBORN-DEBUG] Finished insert_batch loop for shuffle {}, partition {}", shuffle_id, partition);
 
         repartitioner.finish().await?;
 
@@ -427,6 +430,10 @@ impl CelebornShuffleRepartitioner {
         codec: CompressionCodec,
         tracing_enabled: bool,
     ) -> Result<Self> {
+        eprintln!(
+            "[CELEBORN-DEBUG] CelebornShuffleRepartitioner try_new: shuffle_id={}, map_id={}, attempt_id={}, partitions={}",
+            config.shuffle_id, config.map_id, config.attempt_id, config.num_partitions
+        );
         let num_output_partitions = partitioning.partition_count();
 
         // Initialize scratch space
@@ -443,15 +450,27 @@ impl CelebornShuffleRepartitioner {
         let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec)?;
 
         // Create Celeborn client configuration with compression
-        let celeborn_config = CelebornConfig::builder()
-            .app_id(&config.app_id)
-            .master_endpoints(config.master_endpoints.clone())
-            .compression_codec(config.celeborn_compression)
-            .build()
-            .map_err(|e| DataFusionError::External(Box::new(e)))?;
+        // We use spawn_blocking + std::thread::spawn to avoid "Cannot start a runtime from within a runtime" error.
+        // Even spawn_blocking runs threads within the Runtime context. If the initialization code
+        // (e.g. CelebornConfig or ExecutorShuffleClient) implicitly tries to start a Runtime or use block_on,
+        // it will panic. Using a dedicated std::thread escapes the Runtime context completely.
+        let config_clone = config.clone();
+        let client = tokio::task::spawn_blocking(move || {
+            std::thread::spawn(move || {
+                let celeborn_config = CelebornConfig::builder()
+                    .app_id(&config_clone.app_id)
+                    .master_endpoints(config_clone.master_endpoints.clone())
+                    .compression_codec(config_clone.celeborn_compression)
+                    .build()
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
 
-        // Create executor shuffle client
-        let client = ExecutorShuffleClient::new(celeborn_config);
+                Ok::<_, DataFusionError>(ExecutorShuffleClient::new(celeborn_config))
+            })
+            .join()
+            .unwrap_or_else(|e| Err(DataFusionError::Execution(format!("Thread panicked: {:?}", e))))
+        })
+        .await
+        .map_err(|e| DataFusionError::Execution(format!("Join error: {}", e)))??;
 
         // Setup connection to LifecycleManager in Driver
         client
@@ -869,6 +888,7 @@ impl CelebornShuffleRepartitioner {
 
     /// Finish the shuffle and signal mapper end
     pub async fn finish(&mut self) -> Result<()> {
+        eprintln!("[CELEBORN-DEBUG] CelebornShuffleRepartitioner finish: shuffle_id={}, map_id={}", self.shuffle_id, self.map_id);
         with_trace_async("celeborn_finish", self.tracing_enabled, || async {
             // Handle different writer modes
             if let Some(sort_pusher) = self.sort_pusher.as_mut() {

@@ -56,30 +56,29 @@ class CometCelebornIntergrationSuite extends CometTestBase {
   }
 
   test("aa") {
-    val count = spark.range(0, 1600, 1, 8)
-      .select(Seq(col("id"), hash(col("id")).cast("string").as("rid")): _*)
-      .repartition(8, Seq(col("id"), col("rid")): _*).count()
+    val count = spark.range(0, 1600, 1, 8).select(Seq(col("id"), hash(col("id")).cast("string").as("rid")): _*).repartition(8, Seq(col("id"), col("rid")): _*).count()
+    println(count)
     assert(count == 1600, s"Expected count 1600, got $count")
+//    Thread.sleep(Int.MaxValue)
   }
 
   override def sparkConf: SparkConf = {
     val conf = super.sparkConf
     // Set the Celeborn shuffle manager
-    conf.set(
-      "spark.shuffle.manager",
-      "org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager")
+//    conf.setMaster()
+//    conf.set("spark.master", "spark://10.27.36.96:7077")
+//    conf.set("spark.master", "spark://192.168.3.17:7077")
+//    conf.set("spark.repl.class.outputDir", "/Users/fchen/Project/arrow-datafusion-comet/spark/target/classes")
+//    conf.set(
+//      "spark.shuffle.manager",
+//      "org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager")
 
     // Celeborn master endpoints configuration
-    conf.set("spark.celeborn.master.endpoints", "192.168.3.17:9097")
-//    conf.set("spark.celeborn.master.endpoints", "10.27.36.96:9097")
+//    conf.set("spark.celeborn.master.endpoints", "192.168.3.17:9097")
+    conf.set("spark.celeborn.master.endpoints", "10.27.36.96:9097")
 
     // Enable Comet Celeborn shuffle integration
     conf.set("spark.comet.shuffle.celeborn.enabled", "true")
-
-    // Ensure Comet execution is enabled (should be true by default, but explicit is better)
-    conf.set(CometConf.COMET_ENABLED.key, "true")
-    conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
-    conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
 
     // Enable debug logging for troubleshooting
     conf.set("spark.sql.adaptive.enabled", "false") // Disable AQE for simpler debugging
@@ -88,7 +87,18 @@ class CometCelebornIntergrationSuite extends CometTestBase {
     conf.set("spark.celeborn.client.shuffle.compression.codec", "zstd")
     conf.set("spark.comet.shuffle.celeborn.writer.mode", "sort")
 
-//    conf.set("spark.ui.enabled", "true")
+    // 使用 async_sort 模式（默认，最佳性能）
+//    conf.set("spark.comet.shuffle.celeborn.writer.mode", "async_sort")
+
+    // 或者使用同步 sort 模式
+    conf.set("spark.comet.shuffle.celeborn.writer.mode", "sort")
+
+    // 调整 async push 参数
+    conf.set("spark.comet.shuffle.celeborn.async.numWorkers", "8")
+    conf.set("spark.comet.shuffle.celeborn.async.queueCapacity", "2000")
+    conf.set("spark.comet.shuffle.celeborn.async.maxInFlightPerWorker", "64")
+
+    conf.set("spark.ui.enabled", "true")
 
     conf
   }

@@ -67,7 +67,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
-use tokio::runtime::Runtime;
+use tokio::runtime::{Handle, Runtime};
 
 use crate::execution::memory_pools::{
     create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
@@ -513,9 +513,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 pull_input_batches(exec_context)?;
             }
 
-            // Enter the runtime once for the entire polling loop to avoid repeated
-            // Runtime::enter() overhead
-            get_runtime().block_on(async {
+            // Define the async polling logic
+            let poll_future = async {
                 loop {
                     // Polling the stream.
                     let next_item = exec_context.stream.as_mut().unwrap().next();
@@ -580,7 +579,30 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         }
                     }
                 }
-            })
+            };
+
+            // Check if we're already inside a Tokio runtime.
+            // If so, we can't use get_runtime().block_on() as it disallows re-entrance from the same thread.
+            // We also can't use Handle::current().block_on() as it panics inside a runtime context.
+            // We can't use futures::executor::block_on() as it uses thread-local state that
+            // prevents nesting (EnterError).
+            //
+            // Therefore, we use our own recursive_block_on which simply polls and parks the thread.
+            // We do NOT use block_in_place because:
+            // 1. We are typically on a Spark executor thread (entered via get_runtime().block_on),
+            //    not a native Tokio worker thread. Calling block_in_place on a non-worker thread
+            //    can be problematic or at least unnecessary.
+            // 2. Even if we were on a worker thread, blocking one worker is acceptable in the
+            //    multi-thread runtime as long as we don't starve the system.
+            // 3. Mixing block_in_place with manual thread parking (recursive_block_on) can lead
+            //    to complex interactions with Tokio's driver/timer, potentially causing busy loops.
+            if let Ok(_handle) = Handle::try_current() {
+                recursive_block_on(poll_future)
+            } else {
+                // Not in a runtime, use the global runtime.
+                // This sets up the runtime context for the current thread and blocks on the future.
+                get_runtime().block_on(poll_future)
+            }
         })
     })
 }
@@ -824,4 +846,33 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_logMemoryUsage(
         log_memory_usage(&name, value as u64);
         Ok(())
     })
+}
+
+struct ThreadWaker(std::thread::Thread);
+
+impl std::task::Wake for ThreadWaker {
+    fn wake(self: Arc<ThreadWaker>) {
+        self.0.unpark();
+    }
+}
+
+fn recursive_block_on<F: std::future::Future>(future: F) -> F::Output {
+    let mut future = Box::pin(future);
+    let thread = std::thread::current();
+    let waker = std::task::Waker::from(Arc::new(ThreadWaker(thread)));
+    let mut cx = std::task::Context::from_waker(&waker);
+
+    let mut pending_count = 0;
+    loop {
+        match future.as_mut().poll(&mut cx) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => {
+                pending_count += 1;
+                if pending_count % 1000 == 0 {
+                    eprintln!("[Comet Native] recursive_block_on: Pending count: {}", pending_count);
+                }
+                std::thread::park()
+            }
+        }
+    }
 }

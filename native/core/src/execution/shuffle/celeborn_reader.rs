@@ -38,13 +38,14 @@ use datafusion::{
         SendableRecordBatchStream, Statistics,
     },
 };
-use futures::Stream;
+use futures::{Future, FutureExt, Stream};
 use std::{
     any::Any,
     fmt::{self, Debug, Formatter},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
 
 /// Configuration for Celeborn shuffle reader
@@ -217,6 +218,34 @@ impl CelebornReaderMetrics {
     }
 }
 
+/// State of the CelebornShuffleStream
+enum StreamState {
+    /// Not yet initialized, need to start initialization
+    Uninitialized,
+    /// Currently initializing (future is in progress)
+    Initializing(Pin<Box<dyn Future<Output = Result<InitializedData>> + Send>>),
+    /// Initialized and ready to return batches
+    Ready(ReadyState),
+    /// Stream has finished
+    Finished,
+}
+
+/// Data returned after successful initialization
+struct InitializedData {
+    client: Arc<ExecutorShuffleClient>,
+    buffered_batches: Vec<RecordBatch>,
+    bytes_fetched: usize,
+    batches_count: usize,
+}
+
+/// State when stream is ready to return batches
+struct ReadyState {
+    #[allow(dead_code)]
+    client: Arc<ExecutorShuffleClient>,
+    buffered_batches: Vec<RecordBatch>,
+    current_index: usize,
+}
+
 /// Stream that reads shuffle data from Celeborn
 struct CelebornShuffleStream {
     /// Schema
@@ -225,16 +254,8 @@ struct CelebornShuffleStream {
     config: CelebornShuffleReaderConfig,
     /// Metrics
     metrics: CelebornReaderMetrics,
-    /// Client (lazily initialized)
-    client: Option<Arc<ExecutorShuffleClient>>,
-    /// Whether the stream is finished
-    finished: bool,
-    /// Buffered batches from Celeborn
-    buffered_batches: Vec<RecordBatch>,
-    /// Current index in buffered batches
-    current_index: usize,
-    /// Whether initialization is complete
-    initialized: bool,
+    /// Current state of the stream
+    state: StreamState,
 }
 
 impl CelebornShuffleStream {
@@ -247,88 +268,140 @@ impl CelebornShuffleStream {
             schema,
             config,
             metrics,
-            client: None,
-            finished: false,
-            buffered_batches: Vec::new(),
-            current_index: 0,
-            initialized: false,
+            state: StreamState::Uninitialized,
         }
     }
 
-    /// Initialize the Celeborn client and fetch data
-    async fn initialize(&mut self) -> Result<()> {
-        if self.initialized {
-            return Ok(());
-        }
+    /// Create the initialization future
+    fn create_init_future(
+        config: CelebornShuffleReaderConfig,
+    ) -> Pin<Box<dyn Future<Output = Result<InitializedData>> + Send>> {
+        Box::pin(async move {
+            let config_clone = config.clone();
 
-        // Create Celeborn client
-        let celeborn_config = CelebornConfig::builder()
-            .app_id(&self.config.app_id)
-            .master_endpoints(self.config.master_endpoints.clone())
-            .build()
-            .map_err(|e| DataFusionError::External(Box::new(e)))?;
+            // Offload the entire Celeborn interaction to a dedicated thread with its own Runtime.
+            // This avoids any potential issues with nested Runtimes or cross-Runtime future polling.
+            let init_result = tokio::task::spawn_blocking(move || {
+                std::thread::spawn(move || {
+                    // Create a local Runtime for this thread
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|e| DataFusionError::Execution(format!("Failed to create runtime: {}", e)))?;
 
-        let client = ExecutorShuffleClient::new(celeborn_config);
+                    rt.block_on(async {
+                        // 1. Create Celeborn client
+                        let celeborn_config = CelebornConfig::builder()
+                            .app_id(&config_clone.app_id)
+                            .master_endpoints(config_clone.master_endpoints.clone())
+                            .build()
+                            .map_err(|e| DataFusionError::External(Box::new(e)))?;
 
-        // Setup connection to LifecycleManager
-        client
-            .setup_lifecycle_manager_ref(
-                &self.config.lifecycle_manager_host,
-                self.config.lifecycle_manager_port,
-            )
+                        let client = ExecutorShuffleClient::new(celeborn_config);
+
+                        // 2. Setup connection to LifecycleManager
+                        client
+                            .setup_lifecycle_manager_ref(
+                                &config_clone.lifecycle_manager_host,
+                                config_clone.lifecycle_manager_port,
+                            )
+                            .await
+                            .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+                        // 3. Open Partition Stream
+                        eprintln!(
+                            "[CELEBORN-DEBUG] CelebornShuffleStream reading partition: shuffle_id={}, partition_id={}, attempt={}, maps={}..{}",
+                            config_clone.shuffle_id, config_clone.partition_id, config_clone.attempt_number, config_clone.start_map_index, config_clone.end_map_index
+                        );
+                        let mut input_stream = client
+                            .read_partition(
+                                config_clone.shuffle_id,
+                                config_clone.partition_id,
+                                config_clone.attempt_number,
+                                config_clone.start_map_index,
+                                config_clone.end_map_index,
+                            )
+                            .await
+                            .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+                        eprintln!(
+                            "[CELEBORN-DEBUG] Successfully opened stream for shuffle_id={}, partition_id={}",
+                            config_clone.shuffle_id, config_clone.partition_id
+                        );
+
+                        // 4. Read Loop
+                        let mut buffer = vec![0u8; 64 * 1024]; // 64KB buffer
+                        let mut accumulated_data = Vec::new();
+                        let mut bytes_fetched = 0usize;
+                        let mut loop_count = 0;
+
+                        loop {
+                            let read_future = input_stream.read(&mut buffer);
+                            // Keep the timeout logic
+                            let bytes_read = match tokio::time::timeout(Duration::from_secs(60), read_future).await {
+                                Ok(result) => result.map_err(|e| DataFusionError::External(Box::new(e)))?,
+                                Err(_) => {
+                                    eprintln!(
+                                        "[CELEBORN-ERROR] Read timeout after 60s: shuffle_id={}, partition_id={}, bytes_fetched={}",
+                                        config_clone.shuffle_id, config_clone.partition_id, bytes_fetched
+                                    );
+                                    return Err(DataFusionError::Execution("Read timeout from Celeborn".to_string()));
+                                }
+                            };
+
+                            if bytes_read == 0 {
+                                eprintln!(
+                                    "[CELEBORN-DEBUG] Finished reading partition: shuffle_id={}, partition_id={}, total_bytes={}",
+                                    config_clone.shuffle_id, config_clone.partition_id, bytes_fetched
+                                );
+                                break;
+                            }
+
+                            if loop_count % 100 == 0 {
+                                eprintln!(
+                                    "[CELEBORN-DEBUG] Reading partition: shuffle_id={}, partition_id={}, bytes_read_this_chunk={}, total_fetched={}",
+                                    config_clone.shuffle_id, config_clone.partition_id, bytes_read, bytes_fetched + bytes_read
+                                );
+                            }
+                            loop_count += 1;
+
+                            accumulated_data.extend_from_slice(&buffer[..bytes_read]);
+                            bytes_fetched += bytes_read;
+                        }
+
+                        // We can return the client and data.
+                        // Note: The client is created in this local runtime. If we move it out,
+                        // we must ensure it doesn't depend on the runtime being active.
+                        // ExecutorShuffleClient should be Send + Sync and independent of runtime once created (hopefully).
+                        Ok((client, accumulated_data, bytes_fetched))
+                    })
+                })
+                .join()
+                .unwrap_or_else(|e| Err(DataFusionError::Execution(format!("Thread panicked: {:?}", e))))
+            })
             .await
-            .map_err(|e| DataFusionError::External(Box::new(e)))?;
+            .map_err(|e| DataFusionError::Execution(format!("Join error: {}", e)))??;
 
-        // Read partition data
-        let mut fetch_timer = self.metrics.fetch_time.timer();
-        let input_stream = client
-            .read_partition(
-                self.config.shuffle_id,
-                self.config.partition_id,
-                self.config.attempt_number,
-                self.config.start_map_index,
-                self.config.end_map_index,
-            )
-            .await
-            .map_err(|e| DataFusionError::External(Box::new(e)))?;
-        fetch_timer.stop();
+            // Unpack results
+            let (client, accumulated_data, bytes_fetched) = init_result;
 
-        // Read all data from the stream and decode
-        let mut decode_timer = self.metrics.decode_time.timer();
-        
-        // CelebornInputStream uses read() method, not Stream trait
-        // Read data in chunks until EOF
-        let mut buffer = vec![0u8; 64 * 1024]; // 64KB buffer
-        let mut accumulated_data = Vec::new();
-        
-        loop {
-            let bytes_read = input_stream
-                .read(&mut buffer)
-                .await
-                .map_err(|e| DataFusionError::External(Box::new(e)))?;
-            
-            if bytes_read == 0 {
-                break;
+            // 5. Decode Batches (CPU intensive, can be done in main runtime or here, doesn't matter much)
+            let mut buffered_batches = Vec::new();
+            for (_header, data) in BatchIterator::new(&accumulated_data) {
+                if !data.is_empty() {
+                    let batch = read_ipc_compressed(data)?;
+                    buffered_batches.push(batch);
+                }
             }
-            
-            accumulated_data.extend_from_slice(&buffer[..bytes_read]);
-            self.metrics.bytes_fetched.add(bytes_read);
-        }
-        
-        // Process accumulated data using BatchIterator from celeborn_client
-        for (_header, data) in BatchIterator::new(&accumulated_data) {
-            if !data.is_empty() {
-                let batch = read_ipc_compressed(data)?;
-                self.buffered_batches.push(batch);
-                self.metrics.batches_read.add(1);
-            }
-        }
-        decode_timer.stop();
+            let batches_count = buffered_batches.len();
 
-        self.client = Some(Arc::new(client));
-        self.initialized = true;
-
-        Ok(())
+            Ok(InitializedData {
+                client: Arc::new(client),
+                buffered_batches,
+                bytes_fetched,
+                batches_count,
+            })
+        })
     }
 }
 
@@ -336,34 +409,57 @@ impl Stream for CelebornShuffleStream {
     type Item = Result<RecordBatch, DataFusionError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.finished {
-            return Poll::Ready(None);
-        }
+        loop {
+            match &mut self.state {
+                StreamState::Finished => {
+                    return Poll::Ready(None);
+                }
 
-        // Initialize if needed (this is a simplified sync approach)
-        // In production, this should be properly async
-        if !self.initialized {
-            // For now, we'll use a blocking approach
-            // TODO: Implement proper async initialization
-            let rt = tokio::runtime::Handle::current();
-            match rt.block_on(self.initialize()) {
-                Ok(()) => {}
-                Err(e) => {
-                    self.finished = true;
-                    return Poll::Ready(Some(Err(e)));
+                StreamState::Uninitialized => {
+                    // Start initialization
+                    let config = self.config.clone();
+                    let fut = Self::create_init_future(config);
+                    self.state = StreamState::Initializing(fut);
+                    // Continue to poll the future
+                }
+
+                StreamState::Initializing(fut) => {
+                    match fut.poll_unpin(cx) {
+                        Poll::Pending => {
+                            return Poll::Pending;
+                        }
+                        Poll::Ready(Ok(data)) => {
+                            // Record metrics
+                            self.metrics.bytes_fetched.add(data.bytes_fetched);
+                            self.metrics.batches_read.add(data.batches_count);
+
+                            // Transition to Ready state
+                            self.state = StreamState::Ready(ReadyState {
+                                client: data.client,
+                                buffered_batches: data.buffered_batches,
+                                current_index: 0,
+                            });
+                            // Continue to return batches
+                        }
+                        Poll::Ready(Err(e)) => {
+                            self.state = StreamState::Finished;
+                            return Poll::Ready(Some(Err(e)));
+                        }
+                    }
+                }
+
+                StreamState::Ready(ready) => {
+                    if ready.current_index < ready.buffered_batches.len() {
+                        let batch = ready.buffered_batches[ready.current_index].clone();
+                        ready.current_index += 1;
+                        self.metrics.baseline.record_output(batch.num_rows());
+                        return Poll::Ready(Some(Ok(batch)));
+                    } else {
+                        self.state = StreamState::Finished;
+                        return Poll::Ready(None);
+                    }
                 }
             }
-        }
-
-        // Return buffered batches
-        if self.current_index < self.buffered_batches.len() {
-            let batch = self.buffered_batches[self.current_index].clone();
-            self.current_index += 1;
-            self.metrics.baseline.record_output(batch.num_rows());
-            Poll::Ready(Some(Ok(batch)))
-        } else {
-            self.finished = true;
-            Poll::Ready(None)
         }
     }
 }

@@ -62,7 +62,7 @@ object CometCelebornExchangeSink extends CometSink[SparkPlan] {
     }
 
     val conf = SparkEnv.get.conf
-    val appId = conf.getAppId
+    val appId = shuffleManager.getAppUniqueId
     // Note: shuffleId should be valid at this point (after registration)
     val shuffleId = exchange.shuffleDependency.shuffleId
     val masterEndpoints = conf.get("spark.celeborn.master.endpoints", "").split(",").toSeq
